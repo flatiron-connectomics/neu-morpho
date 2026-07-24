@@ -1,0 +1,44 @@
+[workspace]
+name = "em-seg-morpho"
+version = "0.1.0"
+description = "Segment morphology: multi-resolution Draco meshes (vol2mesh) and skeletons (kimimaro) from segmentation volumes, into neuroglancer-precomputed."
+authors = ["Erik Schomburg <eschomburg@flatironinstitute.org>"]
+channels = ["flyem-forge", "conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+# vol2mesh's build is tagged py312; pin to match.
+python = ">=3.12,<3.13"
+numpy = ">=2"
+scipy = "*"
+vol2mesh = "*"          # flyem-forge: multi-resolution Draco meshes for neuroglancer
+# Conda deps required by the editable path deps (their pyproject deps are
+# conda-provided; path deps don't carry them, so declare them here):
+#   em-volume-tools (volume I/O) + em-blockrun (orchestration)
+tensorstore = ">=0.1.70"
+zarr = ">=3"
+ngff_zarr = ">=0.39"
+h5py = "*"
+tifffile = "*"
+imageio = "*"
+jsonschema = "*"
+dask = "*"
+distributed = "*"
+dask-jobqueue = ">=0.8"
+pyyaml = "*"
+
+[pypi-dependencies]
+em-seg-morpho = { path = ".", editable = true }
+em-blockrun = { path = "../em-blockrun", editable = true }        # dask/SLURM chunked-map substrate
+em-volume-tools = { path = "../em-volume-tools", editable = true } # segmentation-array I/O
+kimimaro = "*"          # PyPI only: TEASAR skeletonization
+DracoPy = "*"           # PyPI only: Draco codec Python binding (needed by vol2mesh.multires)
+
+[feature.dev.dependencies]
+pytest = "*"
+
+[feature.dev.tasks]
+test = "pytest -q"
+
+[environments]
+dev = ["dev"]

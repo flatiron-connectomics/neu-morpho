@@ -1,0 +1,12 @@
+.pixi/
+!pixi.lock
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+dask-job-logs/
+*.log
+.vscode/
+.idea/

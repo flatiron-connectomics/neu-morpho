@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "em-seg-morpho"
+version = "0.1.0"
+description = "Segment morphology: multi-resolution Draco meshes and skeletons from segmentation volumes, into neuroglancer-precomputed."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
+# Runtime deps (vol2mesh, kimimaro, em-volume-tools, em-blockrun, tensorstore, …)
+# are provided via pixi (conda-forge/flyem-forge + PyPI); see pixi.toml.
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["em_seg_morpho"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: exercises a real dask cluster or heavy meshing; slower to run",
+]
