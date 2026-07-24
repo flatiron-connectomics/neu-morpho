@@ -32,20 +32,32 @@ from .. import segments as _segments
 
 def _mesh_one(seg_id: int, *, seg_spec: dict, boxes: dict, out_dir: str,
               mesh_cfg: MeshConfig) -> tuple[int, str]:
-    """Picklable per-segment worker: read mask -> mesh -> write. Returns (id, status)."""
+    """Picklable per-segment worker: read mask -> mesh -> write. Returns (id, status).
+
+    Large segments STREAM block masks (one block in memory at a time) rather than
+    reading the whole-object mask — that whole-mask allocation is what OOM'd. The
+    box a block is *read* at is in meshing-LOD coords; the box passed to vol2mesh
+    is the *full-resolution* box (mesh is rescaled to it). TODO: wire the
+    LOD<->fullres box conversion + write_segment_mesh once bbox source is settled.
+    """
     # from em_volume_tools.backends.base import open_backend
-    # backend = open_backend(seg_spec)                      # seg volume at meshing LOD
-    # box = boxes[seg_id]
-    # mask = (backend.read_region(box_to_slices(box)) == seg_id)
-    # if not mask.any(): return (seg_id, "empty")
-    # if _mesh.should_chunk(mask.shape, mesh_cfg):
-    #     blocks, bboxes = read_blocks(backend, box, mesh_cfg.chunk_shape)
-    #     m = _mesh.mesh_from_blocks(blocks, bboxes, mesh_cfg)
+    # backend = open_backend(seg_spec)          # seg volume opened at meshing LOD
+    # bbox = boxes[seg_id]                       # (z0,y0,x0,z1,y1,x1) at meshing LOD
+    # shape = (bbox[3]-bbox[0], bbox[4]-bbox[1], bbox[5]-bbox[2])
+    # read_box = lambda b: backend.read_region((slice(b[0],b[3]),slice(b[1],b[4]),slice(b[2],b[5])))
+    #
+    # if _mesh.should_chunk(shape, mesh_cfg):
+    #     blk_boxes = _mesh.block_boxes(bbox, mesh_cfg.chunk_shape, halo=1)   # cheap list
+    #     masks = _mesh.stream_block_masks(read_box, blk_boxes, seg_id)       # generator!
+    #     m = _mesh.mesh_from_block_stream(masks, to_fullres(blk_boxes), mesh_cfg)
     # else:
-    #     m = _mesh.mesh_from_mask(mask, box, mesh_cfg)
+    #     mask = read_box(bbox) == seg_id
+    #     if not mask.any(): return (seg_id, "empty")
+    #     m = _mesh.mesh_from_mask(mask, to_fullres(bbox), mesh_cfg)
+    #
     # _precomputed.write_segment_mesh(out_dir, seg_id, m, mesh_cfg, ...)
     # return (seg_id, "written")
-    raise NotImplementedError("wire read_region + mesh + write_segment_mesh")
+    raise NotImplementedError("wire streaming read + mesh + write_segment_mesh")
 
 
 def mesh_segments(

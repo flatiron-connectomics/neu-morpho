@@ -40,13 +40,17 @@ dijkstra3d). Both consumers share `em-blockrun`.
    - mesh (marching cubes at the configured LOD → simplify → Draco → multi-res),
    - write mesh fragment(s) + index in neuroglancer multi-resolution mesh format,
    - record status (`written` / `empty` / later `failed`) in the manifest.
-3. **Large segments → chunked meshing + stitching** (`chunked_mesh.py`): when a
-   bbox's binary mask would exceed a memory budget (the OOM we hit), tile the
-   bbox into blocks (`em-blockrun.iter_blocks`), mesh each block's mask fragment
-   independently (bounded memory), then **stitch** — weld shared boundary
-   vertices (via 1-voxel overlap / deterministic boundaries) into one watertight
-   mesh before Draco/multi-res encoding. Verify whether `vol2mesh`'s multi-res
-   path already does block-based generation + stitching, or we implement it.
+3. **Large segments → streamed chunked meshing + stitching**: the OOM came from
+   allocating the **whole-object binary mask** over a large bbox. So we never
+   materialize it — we tile the bbox into (1-voxel-halo) block boxes and pass a
+   **generator** of block masks to `Mesh.from_binary_blocks(gen, boxes,
+   stitch=True)`. vol2mesh meshes each block then discards it (docstring: accepts
+   any iterable incl. a generator), so peak *mask* memory is one block; only the
+   per-block *meshes* (far smaller than masks) accumulate before stitching welds
+   them watertight. **Do not pass a list of block masks** — that reintroduces the
+   OOM. (`mesh.py`: `block_boxes`, `stream_block_masks`, `mesh_from_block_stream`.)
+   The read box is in meshing-LOD coords; the box handed to vol2mesh is the
+   full-res box (mesh rescaled to it).
 4. **Skeletons** (`ops/skeletonize_segments.py`, `skeleton.py`): per-segment (or
    chunked for large) `kimimaro` TEASAR → precomputed skeleton format.
 
