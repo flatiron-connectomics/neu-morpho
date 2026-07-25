@@ -1,99 +1,88 @@
 # em-seg-morpho — Design
 
-Generate per-segment **meshes** and **skeletons** from a segmentation volume, in
-neuroglancer-precomputed format. Reuses the shared substrate:
-`em-blockrun` (dask local/SLURM + resumable manifest) and `em-volume-tools`
-(segmentation-array I/O). Meshes via `vol2mesh`, skeletons via `kimimaro`.
-
-## Dependencies & the reason for the split
+Generate per-body **meshes** and **skeletons** from a segmentation volume, in
+neuroglancer-precomputed format. Reuses `em-blockrun` (dask local/SLURM +
+resumable manifest) and `em-volume-tools` (segmentation-array I/O). Meshes via
+`vol2mesh`, skeletons via `kimimaro`.
 
 Kept separate from `em-volume-tools` because meshing brings heavy, orthogonal
-deps (`vol2mesh` from flyem-forge → DracoPy/marching-cubes; `kimimaro` → cc3d/
-dijkstra3d). Both consumers share `em-blockrun`.
+deps. Motivation vs. the older mesh-n-bone: its CGAL mesh/skeleton path **drops
+disconnected components → false body splits**; vol2mesh + kimimaro capture full
+bodies (all components).
 
-- **vol2mesh** (flyem-forge, `0.2.post13`): multi-resolution Draco meshes.
-  **Verified** at scaffold time — the `vol2mesh.multires` submodule is present.
-  It needs `DracoPy` (PyPI; conda `vol2mesh` does *not* pull it in — added to
-  `pypi-dependencies`). Relevant API:
-  - `Mesh.from_binary_vol(mask_zyx, fullres_box_zyx, method=...)` — single mask.
-  - `Mesh.from_binary_blocks(blocks, boxes_zyx, stitch=True)` — **chunked meshing
-    + boundary stitching** (this is the large-segment path; we don't hand-roll it).
-  - `Mesh.simplify(fraction)`, `laplacian_smooth`, `concatenate_meshes`.
-  - `multires.write_info(...)`, `multires.write_object_mesh(out, seg_id,
-    fragments, chunk_shape_xyz, grid_origin_xyz, vertex_quantization_bits,
-    lod_scales)`, `multires.split_mesh_for_lod(mesh, chunk_shape_xyz, lod)`,
-    `multires.encode_multilod_object(...)` — the neuroglancer multi-res writer.
-- **kimimaro** (PyPI only, 5.8.4): `skeletonize(labels, teasar_params,
-  anisotropy, object_ids, dust_threshold, ...)`; `join_close_components` for
-  stitching chunked skeletons. → precomputed skeleton format.
+## Meshing is block-first and two-stage
 
-## Pipeline
+Modeled on the mesh-n-bone pipeline (verified from its specimen3 configs): iterate
+**blocks**, not bodies. This never builds a whole-object binary mask (the OOM), and
+reads each block exactly once.
 
-1. **Enumerate segments** (`segments.py`): the set of segment IDs to process and
-   their **bounding boxes**. Bbox source is an open question — a label/spatial
-   index if the source has one, else accumulate per-label bboxes by scanning
-   blocks. Skipping background (0) and applying a min-size filter.
-2. **Per-segment mesh task** (`ops/mesh_segments.py`), mapped over segment IDs by
-   `em-blockrun.block_map` (Manifest keyed by **segment id**, resumable):
-   - read the segment's bbox region from the seg volume → binary mask
-     (`em-volume-tools` backend / crop view),
-   - mesh (marching cubes at the configured LOD → simplify → Draco → multi-res),
-   - write mesh fragment(s) + index in neuroglancer multi-resolution mesh format,
-   - record status (`written` / `empty` / later `failed`) in the manifest.
-3. **Large segments → streamed chunked meshing + stitching**: the OOM came from
-   allocating the **whole-object binary mask** over a large bbox. So we never
-   materialize it — we tile the bbox into (1-voxel-halo) block boxes and pass a
-   **generator** of block masks to `Mesh.from_binary_blocks(gen, boxes,
-   stitch=True)`. vol2mesh meshes each block then discards it (docstring: accepts
-   any iterable incl. a generator), so peak *mask* memory is one block; only the
-   per-block *meshes* (far smaller than masks) accumulate before stitching welds
-   them watertight. **Do not pass a list of block masks** — that reintroduces the
-   OOM. (`mesh.py`: `block_boxes`, `stream_block_masks`, `mesh_from_block_stream`.)
-   The read box is in meshing-LOD coords; the box handed to vol2mesh is the
-   full-res box (mesh rescaled to it).
-4. **Skeletons** (`ops/skeletonize_segments.py`, `skeleton.py`): per-segment (or
-   chunked for large) `kimimaro` TEASAR → precomputed skeleton format.
+**Stage 1 — chunk** (`block_map` over non-empty blocks; manifest group `"chunk"`,
+key = block index): read a block once at the meshing scale, mesh **all present (or
+allowlisted) labels together** via `Mesh.from_label_volume(block, fullres_box,
+labels=…, ensure_halo=True)`, per-block simplify (keeps stage-2 light), and write
+one fragment per `(body, block)` under `<chunked>/<body>/<iz>_<iy>_<ix>.drc`.
 
-## Config (all parameters, dataclasses in `config.py`)
+**Stage 2 — assemble** (`block_map` over bodies discovered by listing `<chunked>/`;
+group `"assemble"`, key = body id): gather a body's fragments, `concatenate_meshes`
+→ `stitch_adjacent_faces` (welds block boundaries, keeps **all** components) →
+`multires.write_object_mesh`.
 
-- **Starting LOD / scale**: default **scale 2** (coarser, smaller, faster);
-  scale 0 = highest detail. Whether scale-0 detail is worth the size/time is
-  data-dependent — **must be a config parameter** (default 2). Plus number of
-  LOD levels.
-- Mesh decimation/simplification fraction; Draco quantization bits.
-- **Chunked-meshing threshold**: bbox voxel count (or mask bytes) above which to
-  switch to chunked+stitch; the per-block chunk shape.
-- Output: sharded vs unsharded precomputed mesh; output path (local / s3).
-- Skeleton: kimimaro TEASAR params (scale, const, dust threshold, etc.).
+One manifest, two groups (block-index tuples vs. scalar body ids — the generalized
+em-blockrun keys). Resume skips done blocks/bodies; running only stage 2 reuses
+fragments on disk (mesh-n-bone's `reuse_existing_chunked`).
 
-## Open questions (resolve as we build)
+**Occupancy prefilter** (`occupancy.py`): read a coarse scale once and skip empty
+blocks (mesh-n-bone: ~85% empty). With an allowlist, "occupied" = `isin(coarse,
+allowlist)` so only blocks containing a target body are chunked.
 
-- **Bounding-box source** per segment (label index vs. scan). Biggest unknown.
-- ~~Does vol2mesh do chunked meshing + stitching for us?~~ **Resolved:** yes —
-  `Mesh.from_binary_blocks(..., stitch=True)`. `chunked_mesh.py` just decides
-  when to chunk, reads the segment's blocks (bounded memory each, at the meshing
-  LOD), and calls it. (Meshing at scale ≥1 already cuts mask memory ~8×/level,
-  which alone avoids most of the OOM.)
-- Sharded vs unsharded mesh/skeleton output (neuroglancer supports both).
-- Exact LOD-fragment generation (how many LODs, per-LOD simplification) —
-  `split_mesh_for_lod` + `write_object_mesh`/`encode_multilod_object` are the
-  pieces; tune against real data.
-- **Fault isolation** (deferred from em-blockrun): a meshing run over millions of
-  segments *will* have per-segment failures (bad geometry, a chunk that still
-  OOMs); we want to record `failed` and continue, then resume-retry. Meshing is
-  the concrete driver for adding per-task fault isolation to `em-blockrun`.
+**Body allowlist** (`allowlist.py`): mesh only listed ids (`from_label_volume(labels=)`),
+falling back to **all labels** when none is given.
 
-## Module layout (scaffold)
+## vol2mesh API used (verified; `multires` needs `DracoPy` from PyPI)
+
+`Mesh.from_label_volume(vol, fullres_box, labels=, ensure_halo=True)`,
+`Mesh.simplify(fraction)`, `concatenate_meshes`, `Mesh.stitch_adjacent_faces`,
+`Mesh.serialize`/`from_file`; `multires.write_info` / `write_object_mesh` /
+`split_mesh_for_lod`.
+
+## Skeletons (separate op, stays per-body)
+
+`kimimaro.skeletonize(labels, teasar_params, anisotropy, …)`. Unlike meshing,
+skeletonization is per-body from a bbox-seed crop (coarse footprint → extend to
+avoid clipping arcs into false splits), à la mesh-n-bone's kimimaro run.
+
+## Config (`config.py`)
+
+- `MeshConfig`: `mesh_scale` (default 2; 0 = full detail), `fullres_factor`,
+  `block_shape`, `decimation_fraction`, `num_lods`, `draco_quantization_bits`,
+  `fragment_format`.
+- `SkeletonConfig`, `OutputConfig`.
+
+## Open questions
+
+- Exact **LOD-fragment generation** for the multires write (`split_mesh_for_lod`
+  + `write_object_mesh`; how many LODs, per-LOD decimation) — the one
+  `NotImplementedError` left; tune against real data.
+- **Fixed-edge simplification** in stage 1 (preserve block boundaries) — vol2mesh
+  `simplify` options TBD.
+- Fragment store on **object storage** (currently ceph filesystem).
+- Scale/voxel-size wiring: caller passes `seg_spec` at the meshing scale +
+  `occupancy_spec` at a coarse scale, with voxel sizes — keeps the op
+  format-agnostic. Could auto-derive from source metadata later.
+- **Fault isolation** (deferred from em-blockrun): a meshing run over many bodies
+  *will* have per-item failures; add `failed`-and-continue to em-blockrun.
+
+## Module layout
 
 ```
 em_seg_morpho/
-├── segments.py       # enumerate segment ids + bounding boxes
-├── mesh.py           # single-segment meshing via vol2mesh
-├── chunked_mesh.py   # chunked meshing + stitching for large segments
-├── skeleton.py       # kimimaro skeletonization
-├── precomputed.py    # write neuroglancer multires mesh / skeleton formats
-├── config.py         # MeshConfig / SkeletonConfig
+├── config.py         # MeshConfig / SkeletonConfig / OutputConfig
+├── allowlist.py      # load body allowlist (or None = all)
+├── occupancy.py      # coarse-scale -> non-empty block indices
+├── fragments.py      # per-(body,block) fragment store (write / list_bodies / read)
+├── mesh.py           # mesh_block (stage 1) + assemble_body (stage 2) + fullres_box
+├── precomputed.py    # write_mesh_info + write_body_multires
+├── skeleton.py       # kimimaro (per-body)
 └── ops/
-    ├── mesh_segments.py        # orchestrate meshing across segments (em-blockrun)
-    └── skeletonize_segments.py
+    └── meshify.py     # two-stage orchestration via em-blockrun
 ```

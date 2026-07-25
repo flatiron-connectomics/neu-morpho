@@ -1,5 +1,5 @@
-"""High-level operations: mesh / skeletonize a segmentation across segments."""
+"""High-level operations."""
 
-from .mesh_segments import mesh_segments
+from .meshify import meshify
 
-__all__ = ["mesh_segments"]
+__all__ = ["meshify"]

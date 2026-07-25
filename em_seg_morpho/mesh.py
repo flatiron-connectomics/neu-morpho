@@ -1,87 +1,59 @@
-"""Per-segment mesh generation via vol2mesh.
+"""Block-first meshing: stage 1 (mesh a block's labels) + stage 2 (assemble a body).
 
-Small segments: mesh the whole binary mask (``Mesh.from_binary_vol``).
+Stage 1 (`mesh_block`): read a segmentation block once and mesh all present (or
+allowlisted) labels with ``Mesh.from_label_volume`` — one marching-cubes pass per
+label, halo'd for boundary stitching. No whole-object mask is ever built; peak
+memory is one block. Per-block simplification keeps stage-2 assembly light.
 
-Large segments: **stream** block masks into ``Mesh.from_binary_blocks`` — vol2mesh
-meshes each block then discards it (docstring: "you may pass any iterable of
-blocks, including a generator object"), so peak *mask* memory is a single block,
-never the whole object. This is the key point: the OOM came from materializing
-the whole-object binary mask, so we must pass a **generator** of block masks —
-NOT a list — to keep memory bounded. Only the per-block *meshes* (much smaller
-than masks) accumulate before stitching.
-
-Masks are read at the configured meshing LOD/scale (``MeshConfig.start_lod``,
-default 2), which also cuts per-block mask size ~8×/level.
+Stage 2 (`assemble_body`): concatenate a body's block fragments and
+``stitch_adjacent_faces`` into one watertight mesh — keeping **all** components
+(this is why we can capture full bodies that the old CGAL path split).
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Iterator, Sequence
+from typing import Sequence
 
 import numpy as np
 
 from .config import MeshConfig
 
-# Bounding box in canonical (z, y, x): (z0, y0, x0, z1, y1, x1), half-open.
-BBox = tuple[int, int, int, int, int, int]
+BBox = tuple  # np.ndarray [[z0,y0,x0],[z1,y1,x1]]
 
 
-def mesh_from_mask(mask_zyx: np.ndarray, fullres_box_zyx, cfg: MeshConfig):
-    """Mesh a single binary mask (fits in memory); returns a ``vol2mesh.Mesh``."""
-    from vol2mesh import Mesh
-
-    mesh = Mesh.from_binary_vol(mask_zyx, np.asarray(fullres_box_zyx))
-    if cfg.decimation_fraction and cfg.decimation_fraction < 1.0:
-        mesh.simplify(cfg.decimation_fraction)
-    return mesh
+def fullres_box(region: Sequence[slice], fullres_factor: Sequence[int]) -> np.ndarray:
+    """Full-resolution bounding box (2x3, zyx) for a block region at the mesh scale."""
+    fz, fy, fx = fullres_factor
+    (z0, z1), (y0, y1), (x0, x1) = [(s.start, s.stop) for s in region]
+    return np.array([[z0 * fz, y0 * fy, x0 * fx], [z1 * fz, y1 * fy, x1 * fx]])
 
 
-def mesh_from_block_stream(block_masks: Iterable[np.ndarray],
-                           fullres_boxes_zyx: Sequence[BBox], cfg: MeshConfig):
-    """Mesh a large segment by streaming block masks (bounded memory) + stitching.
+def mesh_block(seg_block_zyx: np.ndarray, fullres_box_zyx: np.ndarray, cfg: MeshConfig,
+               allowlist: set[int] | None = None) -> dict[int, "object"]:
+    """Mesh every (allowlisted) label in one block. Returns ``{body_id: Mesh}``.
 
-    ``block_masks`` MUST be a lazy iterable/generator aligned with
-    ``fullres_boxes_zyx`` (a small list of coordinates) — do not materialize the
-    blocks into a list, or you reintroduce the whole-mask OOM.
+    Background (0) is excluded. Meshes are per-block simplified so downstream
+    assembly works on already-reduced geometry.
     """
     from vol2mesh import Mesh
 
-    mesh = Mesh.from_binary_blocks(block_masks, list(fullres_boxes_zyx), stitch=True)
-    if cfg.decimation_fraction and cfg.decimation_fraction < 1.0:
-        mesh.simplify(cfg.decimation_fraction)
+    labels = sorted(allowlist) if allowlist is not None else None
+    meshes = Mesh.from_label_volume(seg_block_zyx, fullres_box_zyx, labels=labels,
+                                    ensure_halo=True, progress=False)
+    meshes.pop(0, None)                                   # drop background
+    for m in meshes.values():
+        if cfg.decimation_fraction and cfg.decimation_fraction < 1.0:
+            # TODO: fixed-edge simplification to preserve block boundaries for stitching.
+            m.simplify(cfg.decimation_fraction)
+        if cfg.smoothing_iterations:
+            m.laplacian_smooth(cfg.smoothing_iterations)
+    return meshes
+
+
+def assemble_body(fragment_meshes: Sequence["object"], cfg: MeshConfig):
+    """Concatenate + stitch a body's block fragments into one mesh (all components)."""
+    from vol2mesh import concatenate_meshes
+
+    mesh = concatenate_meshes(list(fragment_meshes))
+    mesh.stitch_adjacent_faces()                          # weld shared block boundaries
     return mesh
-
-
-def block_boxes(bbox_zyx: BBox, chunk_shape_zyx: Sequence[int], halo: int = 1) -> list[BBox]:
-    """Tile a segment bbox into block boxes, overlapping by ``halo`` voxels.
-
-    A 1-voxel halo lets adjacent block meshes share boundary geometry so
-    ``stitch=True`` can weld them into a watertight surface. Boxes are clipped to
-    the segment bbox. Cheap (just coordinates) — safe to hold as a list.
-    """
-    z0, y0, x0, z1, y1, x1 = bbox_zyx
-    cz, cy, cx = chunk_shape_zyx
-    boxes: list[BBox] = []
-    for zs in range(z0, z1, cz):
-        for ys in range(y0, y1, cy):
-            for xs in range(x0, x1, cx):
-                boxes.append((
-                    max(z0, zs - halo), max(y0, ys - halo), max(x0, xs - halo),
-                    min(z1, zs + cz + halo), min(y1, ys + cy + halo), min(x1, xs + cx + halo),
-                ))
-    return boxes
-
-
-def stream_block_masks(read_box, boxes: Sequence[BBox], segment_id: int) -> Iterator[np.ndarray]:
-    """Lazily yield one binary block mask per box (only one block in memory at a time).
-
-    ``read_box(box) -> ndarray`` reads that region of the segmentation (caller
-    supplies it, closing over an em-volume-tools backend at the meshing LOD).
-    """
-    for box in boxes:
-        yield read_box(box) == segment_id
-
-
-def should_chunk(bbox_shape_zyx: Sequence[int], cfg: MeshConfig) -> bool:
-    """True if the segment's (LOD-scaled) bbox mask would exceed the memory budget."""
-    return int(np.prod(bbox_shape_zyx)) > cfg.max_mask_voxels

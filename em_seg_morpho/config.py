@@ -1,9 +1,9 @@
-"""Configuration for meshing and skeletonization.
+"""Configuration for the block-first meshing pipeline and skeletonization.
 
-All tunables live here as dataclasses so runs are reproducible and scriptable.
-Notably, the meshing **starting LOD/scale** is configurable (default 2, not the
-full-detail scale 0) — whether scale-0 detail is worth the size/time is
-data-dependent.
+Meshing is **block-first, two-stage** (see docs/DESIGN.md): stage 1 meshes each
+non-empty block (all/allowlisted labels at once) into per-(body, block) fragments;
+stage 2 concatenates + stitches each body's fragments into a multi-resolution
+mesh. No whole-object binary mask is ever built.
 """
 
 from __future__ import annotations
@@ -13,48 +13,52 @@ from dataclasses import dataclass, field
 
 @dataclass
 class MeshConfig:
-    """Parameters for multi-resolution mesh generation."""
+    """Tunables for block-first meshing."""
 
-    # Meshing detail: which segmentation scale to mesh at. 0 = highest detail
-    # (most vertices, largest, slowest); 2 = a reasonable coarser default.
-    start_lod: int = 2
-    num_lods: int = 3                       # multi-resolution levels to emit
-    decimation_fraction: float = 0.1        # target fraction of faces after simplify
-    draco_quantization_bits: int = 10       # Draco position quantization
+    # Segmentation scale to read/mesh at. 0 = full detail (biggest/slowest); a
+    # coarser scale is smaller and cuts per-block mask memory ~8×/level.
+    mesh_scale: int = 2
+    # Full-res voxels per mesh-scale voxel (z, y, x). None -> 2**mesh_scale each
+    # (standard 2× pyramid); set explicitly for anisotropic pyramids.
+    fullres_factor: tuple[int, int, int] | None = None
+    block_shape: tuple[int, int, int] = (256, 256, 256)   # block size at mesh_scale
 
-    # Large-object handling: if a segment's bbox mask exceeds this many voxels,
-    # mesh it chunked-and-stitched instead of materializing the whole mask.
-    max_mask_voxels: int = 512 ** 3
-    chunk_shape: tuple[int, int, int] = (256, 256, 256)
+    # Per-block simplification during stage 1 (fixed-edge preserves block
+    # boundaries so stage-2 assembly works on already-reduced meshes).
+    decimation_fraction: float = 0.1
+    smoothing_iterations: int = 0
 
-    sharded: bool = False                   # neuroglancer sharded vs unsharded mesh
-    min_segment_voxels: int = 0             # skip segments smaller than this
+    # Multi-resolution output.
+    num_lods: int = 3
+    draco_quantization_bits: int = 10
+    sharded: bool = False
+
+    min_segment_voxels: int = 0             # skip bodies smaller than this (if known)
+    fragment_format: str = "drc"            # per-fragment on-disk format (Draco)
 
 
 @dataclass
 class SkeletonConfig:
-    """Parameters for kimimaro TEASAR skeletonization."""
+    """kimimaro TEASAR params. Skeletonization stays per-body (bbox-seed crop)."""
 
-    # Voxel size (z, y, x) in physical units; kimimaro works in physical space.
-    anisotropy: tuple[float, float, float] = (8.0, 8.0, 8.0)
-    # TEASAR knobs (kimimaro naming).
-    scale: float = 4.0
-    const: float = 500.0                    # physical units (e.g. nm)
+    anisotropy: tuple[float, float, float] = (8.0, 8.0, 8.0)   # (z, y, x) nm
+    skeleton_scale: int = 2
+    scale: float = 1.5
+    const: float = 150.0
     pdrf_scale: float = 100000.0
     pdrf_exponent: int = 4
-    dust_threshold: int = 1000              # skip components below this many voxels
-    max_paths: int | None = None
-
-    chunk_shape: tuple[int, int, int] = (256, 256, 256)
-    max_mask_voxels: int = 512 ** 3
+    dust_threshold: int = 50
+    bbox_seed_scale: int = 5                 # coarse scale for the per-body bbox seed
+    bbox_margin_nm: float = 512.0
 
 
 @dataclass
 class OutputConfig:
-    """Where results go and how they're addressed."""
+    """Where results go."""
 
-    dst: str = ""                           # local path or s3://bucket/prefix (precomputed)
-    mesh_dir: str = "mesh"                  # subpath for mesh fragments/index
+    dst: str = ""                            # final multires meshes (local or s3://)
+    chunked_dir: str = ""                    # stage-1 fragments (local/ceph); default dst+"/chunked"
+    mesh_dir: str = "mesh"                   # multires mesh subpath under dst
     skeleton_dir: str = "skeleton"
-    progress_path: str | None = None        # em-blockrun manifest (default: derived from dst)
+    progress_path: str | None = None         # em-blockrun manifest (default derived from dst)
     extra: dict = field(default_factory=dict)
