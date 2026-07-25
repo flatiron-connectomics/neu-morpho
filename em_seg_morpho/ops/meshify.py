@@ -22,7 +22,8 @@ from em_blockrun import Manifest, block_map, iter_blocks
 
 from ..allowlist import load_allowlist
 from ..config import MeshConfig, OutputConfig
-from ..mesh import assemble_body, fullres_box, mesh_block
+from ..coords import block_chunk_shape_xyz, physical_box
+from ..mesh import assemble_body, mesh_block
 from ..occupancy import occupied_blocks
 from ..precomputed import write_body_multires, write_mesh_info
 from .. import fragments as _frag
@@ -32,11 +33,11 @@ from .. import fragments as _frag
 # Picklable workers
 # --------------------------------------------------------------------------- #
 def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfig,
-                 allow: set[int] | None, fullres_factor: Sequence[int]) -> tuple:
+                 allow: set[int] | None, mesh_voxel_size: Sequence[float]) -> tuple:
     from em_volume_tools.backends.base import open_backend
 
     seg = open_backend(seg_spec).read_region(block.region)      # one block at the mesh scale
-    meshes = mesh_block(seg, fullres_box(block.region, fullres_factor), mesh_cfg, allow)
+    meshes = mesh_block(seg, physical_box(block.region, mesh_voxel_size), mesh_cfg, allow)
     for body_id, m in meshes.items():
         _frag.write_fragment(chunked_dir, body_id, block.index, m, mesh_cfg.fragment_format)
     return (block.index, "written" if meshes else "empty")
@@ -75,7 +76,6 @@ def meshify(
 
     mesh_cfg = mesh_cfg or MeshConfig()
     allow = load_allowlist(allowlist)
-    fullres_factor = tuple(mesh_cfg.fullres_factor or (2 ** mesh_cfg.mesh_scale,) * 3)
 
     shape = open_backend(seg_spec).shape                        # (z, y, x) at mesh scale
     grid_shape = tuple(-(-shape[a] // mesh_cfg.block_shape[a]) for a in range(3))
@@ -95,11 +95,11 @@ def meshify(
     out_dir = out.dst.rstrip("/") + "/" + out.mesh_dir
     chunked_dir = out.chunked_dir or (out.dst.rstrip("/") + "/chunked")
     progress = out.progress_path or (out.dst.rstrip("/") + ".progress.jsonl")
-    write_mesh_info(out_dir, mesh_cfg)
+    write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
 
-    # multires octree base (full-res)
-    chunk_shape_xyz = [mesh_cfg.block_shape[a] * fullres_factor[a] for a in (2, 1, 0)]
-    grid_origin_xyz = [0, 0, 0]
+    # multires octree base, in nm (model space = physical nm, grid origin at 0)
+    chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
+    grid_origin_xyz = [0.0, 0.0, 0.0]
 
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
@@ -108,7 +108,8 @@ def meshify(
         if "chunk" in stages:
             todo = [b for b in blocks if not (resume and manifest.is_done("chunk", b.index))]
             worker = functools.partial(_chunk_block, seg_spec=seg_spec, chunked_dir=chunked_dir,
-                                       mesh_cfg=mesh_cfg, allow=allow, fullres_factor=fullres_factor)
+                                       mesh_cfg=mesh_cfg, allow=allow,
+                                       mesh_voxel_size=tuple(mesh_voxel_size))
             block_map(todo, worker, client=client, npartitions=npartitions,
                       on_result=lambda r: manifest.record("chunk", r))
 

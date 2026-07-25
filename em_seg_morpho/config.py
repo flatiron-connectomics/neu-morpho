@@ -16,11 +16,10 @@ class MeshConfig:
     """Tunables for block-first meshing."""
 
     # Segmentation scale to read/mesh at. 0 = full detail (biggest/slowest); a
-    # coarser scale is smaller and cuts per-block mask memory ~8×/level.
+    # coarser scale is smaller and cuts per-block mask memory ~8×/level. The
+    # caller passes the meshing scale's voxel size (nm) so coordinates stay in
+    # physical world space — no assumed 2**scale pyramid factor (see coords.py).
     mesh_scale: int = 2
-    # Full-res voxels per mesh-scale voxel (z, y, x). None -> 2**mesh_scale each
-    # (standard 2× pyramid); set explicitly for anisotropic pyramids.
-    fullres_factor: tuple[int, int, int] | None = None
     block_shape: tuple[int, int, int] = (256, 256, 256)   # block size at mesh_scale
 
     # Per-block simplification during stage 1 (fixed-edge preserves block

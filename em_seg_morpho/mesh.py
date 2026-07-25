@@ -18,27 +18,19 @@ import numpy as np
 
 from .config import MeshConfig
 
-BBox = tuple  # np.ndarray [[z0,y0,x0],[z1,y1,x1]]
 
-
-def fullres_box(region: Sequence[slice], fullres_factor: Sequence[int]) -> np.ndarray:
-    """Full-resolution bounding box (2x3, zyx) for a block region at the mesh scale."""
-    fz, fy, fx = fullres_factor
-    (z0, z1), (y0, y1), (x0, x1) = [(s.start, s.stop) for s in region]
-    return np.array([[z0 * fz, y0 * fy, x0 * fx], [z1 * fz, y1 * fy, x1 * fx]])
-
-
-def mesh_block(seg_block_zyx: np.ndarray, fullres_box_zyx: np.ndarray, cfg: MeshConfig,
+def mesh_block(seg_block_zyx: np.ndarray, box_nm_zyx: np.ndarray, cfg: MeshConfig,
                allowlist: set[int] | None = None) -> dict[int, "object"]:
     """Mesh every (allowlisted) label in one block. Returns ``{body_id: Mesh}``.
 
-    Background (0) is excluded. Meshes are per-block simplified so downstream
-    assembly works on already-reduced geometry.
+    ``box_nm_zyx`` is the block's physical (nm) box (see coords.physical_box), so
+    vertices come out in nm world coords. Background (0) is excluded; meshes are
+    per-block simplified so downstream assembly works on already-reduced geometry.
     """
     from vol2mesh import Mesh
 
     labels = sorted(allowlist) if allowlist is not None else None
-    meshes = Mesh.from_label_volume(seg_block_zyx, fullres_box_zyx, labels=labels,
+    meshes = Mesh.from_label_volume(seg_block_zyx, box_nm_zyx, labels=labels,
                                     ensure_halo=True, progress=False)
     meshes.pop(0, None)                                   # drop background
     for m in meshes.values():

@@ -38,6 +38,25 @@ allowlist)` so only blocks containing a target body are chunked.
 **Body allowlist** (`allowlist.py`): mesh only listed ids (`from_label_volume(labels=)`),
 falling back to **all labels** when none is given.
 
+## Coordinate contract (alignment) — `coords.py`
+
+mesh-n-bone hit **mesh↔skeleton offset** bugs (segment 231668). Root cause:
+meshes and skeletons landing in different coordinate spaces. The contract that
+prevents it, verified by `tests/test_alignment.py`:
+
+- **One model space for everything: physical nanometers** (full-res world, zyx),
+  with **identity** neuroglancer `info` transforms (mesh *and* skeleton).
+- Expressed via each scale's **voxel size (nm)** — never an assumed `2**scale`
+  pyramid factor — so anisotropic / non-standard pyramids stay aligned. (This is
+  the hardening against the "pretty substantial modifications for our not-clean
+  dataset" experience.)
+- Mesh: `from_label_volume(block, physical_box(region, voxel_size_mesh))` →
+  vertices in nm (verified: a cube at mesh-voxels [4:12] lands at nm [32:96]).
+- Skeleton: run kimimaro with `anisotropy = voxel_size` (vertices become physical
+  nm, crop-local), then `skeleton_to_physical(v, crop_origin_nm)` — the crop
+  origin is the piece whose omission is the 231668 offset.
+- Multires octree: `chunk_shape` / `grid_origin` in nm; `grid_origin = 0`.
+
 ## vol2mesh API used (verified; `multires` needs `DracoPy` from PyPI)
 
 `Mesh.from_label_volume(vol, fullres_box, labels=, ensure_halo=True)`,
@@ -80,9 +99,10 @@ em_seg_morpho/
 ├── allowlist.py      # load body allowlist (or None = all)
 ├── occupancy.py      # coarse-scale -> non-empty block indices
 ├── fragments.py      # per-(body,block) fragment store (write / list_bodies / read)
-├── mesh.py           # mesh_block (stage 1) + assemble_body (stage 2) + fullres_box
+├── coords.py         # coordinate contract: physical-nm space (mesh↔skeleton alignment)
+├── mesh.py           # mesh_block (stage 1) + assemble_body (stage 2)
 ├── precomputed.py    # write_mesh_info + write_body_multires
-├── skeleton.py       # kimimaro (per-body)
+├── skeleton.py       # kimimaro (per-body; vertices -> global nm)
 └── ops/
     └── meshify.py     # two-stage orchestration via em-blockrun
 ```
