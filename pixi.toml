@@ -12,6 +12,8 @@ python = ">=3.12,<3.13"
 numpy = ">=2"
 scipy = "*"
 vol2mesh = "*"          # flyem-forge: multi-resolution Draco meshes for neuroglancer
+dvidutils = "*"         # flyem-forge: Draco codec for vol2mesh Mesh.serialize('drc')
+trimesh = "*"           # vol2mesh.multires LOD slicing (trim_mesh_to_box)
 # Conda deps required by the editable path deps (their pyproject deps are
 # conda-provided; path deps don't carry them, so declare them here):
 #   em-volume-tools (volume I/O) + em-blockrun (orchestration)

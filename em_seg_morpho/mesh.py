@@ -27,10 +27,18 @@ def mesh_block(seg_block_zyx: np.ndarray, box_nm_zyx: np.ndarray, cfg: MeshConfi
     vertices come out in nm world coords. Background (0) is excluded; meshes are
     per-block simplified so downstream assembly works on already-reduced geometry.
     """
+    # Only mesh labels actually present (intersect with the allowlist). This
+    # skips all-background blocks and avoids vol2mesh choking on empty label lists.
+    present = np.unique(seg_block_zyx)
+    present = present[present != 0]
+    if allowlist is not None:
+        present = present[np.isin(present, np.array(sorted(allowlist), dtype=present.dtype))]
+    if present.size == 0:
+        return {}
+
     from vol2mesh import Mesh
 
-    labels = sorted(allowlist) if allowlist is not None else None
-    meshes = Mesh.from_label_volume(seg_block_zyx, box_nm_zyx, labels=labels,
+    meshes = Mesh.from_label_volume(seg_block_zyx, box_nm_zyx, labels=present.tolist(),
                                     ensure_halo=True, progress=False)
     meshes.pop(0, None)                                   # drop background
     for m in meshes.values():

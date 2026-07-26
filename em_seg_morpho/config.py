@@ -29,7 +29,8 @@ class MeshConfig:
 
     # Multi-resolution output.
     num_lods: int = 3
-    draco_quantization_bits: int = 10
+    lod_decimation_factor: float = 2.0       # face reduction per coarser LOD
+    draco_quantization_bits: int = 10        # must be 10 or 16
     sharded: bool = False
 
     min_segment_voxels: int = 0             # skip bodies smaller than this (if known)

@@ -49,9 +49,9 @@ def _assemble_body(body_id: int, *, chunked_dir: str, out_dir: str, mesh_cfg: Me
     if not frags:
         return (body_id, "empty")
     mesh = assemble_body(frags, mesh_cfg)
-    write_body_multires(out_dir, body_id, mesh, mesh_cfg,
-                        chunk_shape_xyz=chunk_shape_xyz, grid_origin_xyz=grid_origin_xyz)
-    return (body_id, "written")
+    n = write_body_multires(out_dir, body_id, mesh, mesh_cfg,
+                            chunk_shape_xyz=chunk_shape_xyz, grid_origin_xyz=grid_origin_xyz)
+    return (body_id, "written" if n else "empty")
 
 
 # --------------------------------------------------------------------------- #
