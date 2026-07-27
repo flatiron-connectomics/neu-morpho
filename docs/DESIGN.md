@@ -64,7 +64,7 @@ prevents it, verified by `tests/test_alignment.py`:
 `Mesh.serialize`/`from_file`; `multires.write_info` / `write_object_mesh` /
 `split_mesh_for_lod`.
 
-## Skeletons (separate op, stays per-body)
+## Skeletons — block-first, two-stage (`ops/skeletonize_segments.py`)
 
 **kimimaro** is the chosen skeletonizer — validated as the clear winner on *real*
 Megaphragma neurons (cleaner than skeletor `by_wavefront`/`by_teasar`, which
@@ -75,8 +75,45 @@ open/close (`SkeletonConfig.mask_opening_iters`/`mask_closing_iters`, default 0)
 can tame convolution from imperfect segmentation — keep tiny (a voxel at a coarse
 skeleton scale is large and can sever thin processes / merge dense arbors).
 
-Skeletonization is per-body from a crop; the crop **bbox comes from the metrics
-DB** (below), not pre-known values.
+Skeletonization mirrors meshing rather than cropping per body:
+
+- **Stage 1 `skel-chunk`** — `block_map` over occupancy-filtered blocks;
+  `skeletonize_block` runs `kimimaro.skeletonize(..., fix_borders=True,
+  anisotropy=voxel_size)` over all (allowlisted) labels in the block at once,
+  shifts vertices to global nm by the block origin, and writes per-(body, block)
+  fragments to the fragment store.
+- **Stage 2 `skel-fuse`** — `block_map` over bodies discovered by listing the
+  fragment dirs; `fuse_body` runs `join_close_components` (welds the block seams
+  — `fix_borders` put each fragment's endpoint at the centre of the contact area,
+  so seam endpoints are ~a voxel apart) then `postprocess` (drops dust and short
+  ticks), writes the precomputed skeleton, and reports metrics to the DB.
+
+**Why block-first**, given skeletons were originally planned per-body: the OOM
+hazard in the crop approach is the bounding-box **extent**, not the voxel count.
+A sparse arbor has few voxels but a huge bbox, and it is the dense crop array that
+blows up. A block is bounded by construction. A body wholly inside one block
+yields a single fragment, so fusion is a no-op for it and only large/spanning
+bodies see real welding. The per-body crop path (`skeletonize_body`, fed by
+`metrics_db.crop_at_scale`) is kept for one-offs and the comparison harness.
+
+Verified empirically against kimimaro 5.8.4 before building: a rod split across
+three blocks fuses back to **one** component at full extent, and a blob inside one
+block is untouched.
+
+### Skeleton output format
+
+Written directly as `neuroglancer_skeletons` (`precomputed.write_skeleton_info` /
+`write_body_skeleton`) via osteoid's `Skeleton.to_precomputed` — osteoid is
+already a kimimaro dependency, so no CloudVolume (which we avoid for writing).
+`info` declares an identity transform and the `radius` + `vertex_types` vertex
+attributes; every blob is normalized to exactly those, so the two can't drift.
+
+**The zyx→xyz flip is part of the alignment contract.** Model space is nm held
+*zyx* in memory (`Mesh.vertices_zyx`, kimimaro vertices), but both precomputed
+formats *store* xyz. vol2mesh flips internally for meshes; `encode_skeleton` does
+it for skeletons. Skipping it yields skeletons mirrored through the z=x diagonal
+relative to their meshes — the same class of bug as the dropped crop origin, and
+tested the same way (`tests/test_skeleton_precomputed.py`).
 
 ## Per-body metrics database (`metrics_db.py`, `ops/index_segments.py`)
 
@@ -88,10 +125,12 @@ the "need a body's bbox before we can crop it" dependency.
   merges into the DB (min/max bbox, summed counts) **atomically per block**
   (bbox+count and the block's done-marker commit together), so it's exact, covers
   all bodies, and resumes without double-counting. Bbox stored in full-res voxels.
-- **Enrichment**: meshing/skeletonization `update_body(...)` their columns
-  (mesh area/verts/components; cable length, branches, tips, max radius).
-- **Consumers**: `crop_at_scale(body_id, factor, margin)` gives skeletonization
-  its per-body crop; `bodies_by_size` / `write_allowlist` generate the meshing
+- **Enrichment**: `update_body(...)` sets a stage's columns (mesh area / verts /
+  components; cable length, branches, tips, max radius) — upserting, so a body the
+  index scan never saw still gets its metrics. `skel-fuse` writes its metrics from
+  the driver, which stays the DB's sole writer.
+- **Consumers**: `crop_at_scale(body_id, factor, margin)` gives the per-body crop
+  path its crop; `bodies_by_size` / `write_allowlist` generate the meshing
   allowlist by size — closing the loop (index → size-filter → allowlist → mesh).
 
 ## Config (`config.py`)
@@ -99,15 +138,24 @@ the "need a body's bbox before we can crop it" dependency.
 - `MeshConfig`: `mesh_scale` (default 2; 0 = full detail), `fullres_factor`,
   `block_shape`, `decimation_fraction`, `num_lods`, `draco_quantization_bits`,
   `fragment_format`.
-- `SkeletonConfig`, `OutputConfig`.
+- `SkeletonConfig`: `anisotropy` (the skeleton scale's voxel size in nm — there is
+  no separate voxel-size argument), `block_shape`, TEASAR params, `fix_borders`,
+  and the stage-2 fusion knobs `join_radius_nm` / `postprocess_dust_nm` /
+  `postprocess_tick_nm` (all in nm, since vertices are nm).
+- `OutputConfig`.
 
 ## Open questions
 
-- Exact **LOD-fragment generation** for the multires write (`split_mesh_for_lod`
-  + `write_object_mesh`; how many LODs, per-LOD decimation) — the one
-  `NotImplementedError` left; tune against real data.
+- **`join_radius_nm` default is unbounded** (igneous' behaviour): every component
+  of a body is joined into one tree. That guarantees one skeleton per body, but
+  bridges genuinely-separate pieces with a long straight edge that inflates
+  `cable_length_nm`. Bounding it to a few voxels would weld only block seams.
+  Decide against real data.
 - **Fixed-edge simplification** in stage 1 (preserve block boundaries) — vol2mesh
   `simplify` options TBD.
+- **Meshing DB enrichment** is still unwired: the `assemble` worker should return
+  mesh area / verts / components and the driver `update_body` them, the way
+  `skel-fuse` now does.
 - Fragment store on **object storage** (currently ceph filesystem).
 - Scale/voxel-size wiring: caller passes `seg_spec` at the meshing scale +
   `occupancy_spec` at a coarse scale, with voxel sizes — keeps the op
@@ -122,14 +170,15 @@ em_seg_morpho/
 ├── config.py         # MeshConfig / SkeletonConfig / OutputConfig
 ├── allowlist.py      # load body allowlist (or None = all)
 ├── occupancy.py      # coarse-scale -> non-empty block indices
-├── fragments.py      # per-(body,block) fragment store (write / list_bodies / read)
+├── fragments.py      # per-(body,block) fragment store, meshes (.drc) + skeletons (.skel)
 ├── coords.py         # coordinate contract: physical-nm space (mesh↔skeleton alignment)
 ├── mesh.py           # mesh_block (stage 1) + assemble_body (stage 2)
-├── precomputed.py    # write_mesh_info + write_body_multires
-├── skeleton.py       # kimimaro (per-body; vertices -> global nm; optional mask open/close)
+├── precomputed.py    # mesh info/multires + skeleton info/blob (zyx->xyz flip lives here)
+├── skeleton.py       # kimimaro: skeletonize_block (stage 1), fuse_body + metrics (stage 2)
 ├── metrics_db.py     # SQLite per-body metrics (bbox/count/volume + enrichment)
 ├── skelcompare.py    # skeletonization comparison harness (kimimaro vs skeletor) + 3D viz
 └── ops/
-    ├── meshify.py         # two-stage meshing orchestration via em-blockrun
-    └── index_segments.py  # parallel scan -> per-body metrics DB (bbox/count)
+    ├── meshify.py              # two-stage meshing orchestration via em-blockrun
+    ├── skeletonize_segments.py # two-stage skeletonization (skel-chunk / skel-fuse)
+    └── index_segments.py       # parallel scan -> per-body metrics DB (bbox/count)
 ```

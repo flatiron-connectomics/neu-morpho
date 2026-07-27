@@ -14,7 +14,7 @@ writer (block-map workers only compute per-block partials).
 from __future__ import annotations
 
 import sqlite3
-from typing import Iterable, Mapping
+from typing import Mapping, Sequence
 
 _BBOX = ["z0", "y0", "x0", "z1", "y1", "x1"]
 # enrichment columns other stages may set
@@ -113,11 +113,20 @@ class MetricsDB:
 
     # -- enrichment (mesh / skeleton stages, via the single-writer driver) --
     def update_body(self, body_id: int, **cols) -> None:
+        """Set enrichment columns for a body, inserting the row if it is new.
+
+        The values go in the INSERT as well as the DO UPDATE: with them only in
+        the conflict branch, a body the index scan never saw would be inserted
+        with all-NULL metrics and the update silently skipped.
+        """
         if not cols:
             return
-        assignments = ", ".join(f"{k}=?" for k in cols)
+        names = ", ".join(cols)
+        placeholders = ", ".join("?" for _ in cols)
+        assignments = ", ".join(f"{k}=excluded.{k}" for k in cols)
         self.con.execute(
-            f"INSERT INTO bodies (body_id) VALUES (?) ON CONFLICT(body_id) DO UPDATE SET {assignments}",
+            f"INSERT INTO bodies (body_id, {names}) VALUES (?, {placeholders}) "
+            f"ON CONFLICT(body_id) DO UPDATE SET {assignments}",
             (int(body_id), *cols.values()))
         self.con.commit()
 
