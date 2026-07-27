@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import pdb
+import sys
+import traceback
 
 from em_seg_morpho.skelcompare import (
     SHAPES, body_from_volume, mask_to_trimesh, mesh_from_file,
@@ -104,4 +107,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (pdb.bdb.BdbQuit, KeyboardInterrupt):
+        sys.exit(1)
+    except:
+        traceback.print_exc()
+        pdb.post_mortem()

@@ -48,8 +48,15 @@ class SkeletonConfig:
     pdrf_scale: float = 100000.0
     pdrf_exponent: int = 4
     dust_threshold: int = 50
-    bbox_seed_scale: int = 5                 # coarse scale for the per-body bbox seed
-    bbox_margin_nm: float = 512.0
+    bbox_margin_vox: int = 2                  # pad the DB bbox when cropping a body
+
+    # Optional mask cleanup before kimimaro, to tame convolution from imperfect
+    # segmentation. KEEP SMALL (1 iter = 1 voxel): opening removes tiny boundary
+    # protrusions (spurious-branch sources) but at a COARSE skeleton_scale a
+    # voxel is large and can sever thin processes / merge dense arbors — so both
+    # default OFF; enable cautiously per data.
+    mask_opening_iters: int = 0
+    mask_closing_iters: int = 0
 
 
 @dataclass

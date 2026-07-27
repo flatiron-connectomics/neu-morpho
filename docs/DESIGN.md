@@ -66,9 +66,33 @@ prevents it, verified by `tests/test_alignment.py`:
 
 ## Skeletons (separate op, stays per-body)
 
-`kimimaro.skeletonize(labels, teasar_params, anisotropy, …)`. Unlike meshing,
-skeletonization is per-body from a bbox-seed crop (coarse footprint → extend to
-avoid clipping arcs into false splits), à la mesh-n-bone's kimimaro run.
+**kimimaro** is the chosen skeletonizer — validated as the clear winner on *real*
+Megaphragma neurons (cleaner than skeletor `by_wavefront`/`by_teasar`, which
+convolve bulbs and/or drop branches). skeletor stays available only via the
+comparison harness (`skelcompare.py` + `scripts/compare_skeletons.py`: same body
+→ mask + mesh → methods → metrics + interactive 3D HTML). Optional small mask
+open/close (`SkeletonConfig.mask_opening_iters`/`mask_closing_iters`, default 0)
+can tame convolution from imperfect segmentation — keep tiny (a voxel at a coarse
+skeleton scale is large and can sever thin processes / merge dense arbors).
+
+Skeletonization is per-body from a crop; the crop **bbox comes from the metrics
+DB** (below), not pre-known values.
+
+## Per-body metrics database (`metrics_db.py`, `ops/index_segments.py`)
+
+A SQLite DB, one row per body, is the join point for per-body outputs and removes
+the "need a body's bbox before we can crop it" dependency.
+
+- **Index scan** (`index_segments`): a block-map reduction over the segmentation —
+  each block reports per-label bbox + voxel count; the single-writer driver
+  merges into the DB (min/max bbox, summed counts) **atomically per block**
+  (bbox+count and the block's done-marker commit together), so it's exact, covers
+  all bodies, and resumes without double-counting. Bbox stored in full-res voxels.
+- **Enrichment**: meshing/skeletonization `update_body(...)` their columns
+  (mesh area/verts/components; cable length, branches, tips, max radius).
+- **Consumers**: `crop_at_scale(body_id, factor, margin)` gives skeletonization
+  its per-body crop; `bodies_by_size` / `write_allowlist` generate the meshing
+  allowlist by size — closing the loop (index → size-filter → allowlist → mesh).
 
 ## Config (`config.py`)
 
@@ -102,7 +126,10 @@ em_seg_morpho/
 ├── coords.py         # coordinate contract: physical-nm space (mesh↔skeleton alignment)
 ├── mesh.py           # mesh_block (stage 1) + assemble_body (stage 2)
 ├── precomputed.py    # write_mesh_info + write_body_multires
-├── skeleton.py       # kimimaro (per-body; vertices -> global nm)
+├── skeleton.py       # kimimaro (per-body; vertices -> global nm; optional mask open/close)
+├── metrics_db.py     # SQLite per-body metrics (bbox/count/volume + enrichment)
+├── skelcompare.py    # skeletonization comparison harness (kimimaro vs skeletor) + 3D viz
 └── ops/
-    └── meshify.py     # two-stage orchestration via em-blockrun
+    ├── meshify.py         # two-stage meshing orchestration via em-blockrun
+    └── index_segments.py  # parallel scan -> per-body metrics DB (bbox/count)
 ```

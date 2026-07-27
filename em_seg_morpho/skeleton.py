@@ -29,6 +29,14 @@ def skeletonize_body(mask_zyx: np.ndarray, body_id: int, crop_origin_vox_zyx, cf
     """
     import kimimaro
 
+    if cfg.mask_opening_iters or cfg.mask_closing_iters:
+        import scipy.ndimage as ndi          # small morphological cleanup (see SkeletonConfig)
+        b = mask_zyx.astype(bool)
+        if cfg.mask_opening_iters:
+            b = ndi.binary_opening(b, iterations=cfg.mask_opening_iters)
+        if cfg.mask_closing_iters:
+            b = ndi.binary_closing(b, iterations=cfg.mask_closing_iters)
+        mask_zyx = b
     labels = mask_zyx.astype(np.uint64) * np.uint64(body_id)
     skels = kimimaro.skeletonize(
         labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,
