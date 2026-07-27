@@ -28,12 +28,14 @@ dask = "*"
 distributed = "*"
 dask-jobqueue = ">=0.8"
 pyyaml = "*"
+plotly = "*"            # interactive 3D skeleton comparison (self-contained HTML)
 
 [pypi-dependencies]
 em-seg-morpho = { path = ".", editable = true }
 em-blockrun = { path = "../em-blockrun", editable = true }        # dask/SLURM chunked-map substrate
 em-volume-tools = { path = "../em-volume-tools", editable = true } # segmentation-array I/O
-kimimaro = "*"          # PyPI only: TEASAR skeletonization
+kimimaro = "*"          # PyPI only: TEASAR skeletonization (voxel mask)
+skeletor = "*"          # PyPI only: mesh skeletonization (wavefront / teasar) + post-processing
 DracoPy = "*"           # PyPI only: Draco codec Python binding (needed by vol2mesh.multires)
 
 [feature.dev.dependencies]
