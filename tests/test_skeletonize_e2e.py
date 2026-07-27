@@ -6,6 +6,7 @@ into ONE component covering the full extent (that is what ``fix_borders`` +
 """
 
 import os
+from dataclasses import replace
 
 import numpy as np
 
@@ -124,9 +125,6 @@ def test_resume_skips_done_and_stage2_reuses_fragments(tmp_path):
 
 def test_fuse_body_welds_seams_not_just_concatenates():
     """Guard the property the whole design rests on: fragments become one tree."""
-    import kimimaro
-
-    from em_seg_morpho.coords import crop_origin_nm
     from em_seg_morpho.skeleton import fuse_body, skeletonize_block
 
     cfg = _cfg()
@@ -139,3 +137,70 @@ def test_fuse_body_welds_seams_not_just_concatenates():
     assert len(fused.components()) == 1
     # welding adds the seam edges, so the fused cable exceeds the sum of the parts
     assert fused.cable_length() > sum(f.cable_length() for f in frags)
+
+
+def _split_body():
+    """One label, two blobs ~400 nm apart — a segmentation split, not a seam."""
+    vol = np.zeros((32, 32, 96), np.uint64)
+    vol[8:24, 8:24, 4:20] = 7
+    vol[8:24, 8:24, 70:86] = 7
+    return vol
+
+
+def test_default_join_does_not_bridge_a_segmentation_split():
+    """The default radius is seam-scale: distant pieces stay apart, and stay PRESENT.
+
+    An unbounded join would connect them with one straight edge between the
+    nearest vertex pair — inventing hundreds of nm of cable that no biology
+    produced, and inflating cable_length_nm for exactly the bodies whose
+    segmentation is least trustworthy.
+    """
+    from em_seg_morpho.skeleton import fuse_body, join_radius_nm, skeletonize_block
+
+    cfg = _cfg()
+    assert join_radius_nm(cfg) == 16.0                  # 2 x 8 nm voxel
+    frags = list(skeletonize_block(_split_body(), (0, 0, 0), cfg).values())
+
+    fused = fuse_body(frags, cfg, body_id=7)
+    assert len(fused.components()) == 2                 # kept, just disconnected
+    bounded_cable = fused.cable_length()
+
+    unbounded = fuse_body(frags, replace(cfg, join_radius_nm=float("inf")), body_id=7)
+    assert len(unbounded.components()) == 1
+    assert unbounded.cable_length() > 1.5 * bounded_cable   # the invented edge
+
+
+def test_join_radius_zero_defers_to_postprocess():
+    """radius=0 skips the explicit join; postprocess's own join still welds seams."""
+    from em_seg_morpho.skeleton import fuse_body, skeletonize_block
+
+    cfg = replace(_cfg(), join_radius_nm=0)
+    vol = _volume()
+    frags = [skeletonize_block(vol[z0:z0 + 32], (z0, 0, 0), cfg)[7] for z0 in (0, 32, 64)]
+
+    fused = fuse_body(frags, cfg, body_id=7)
+    assert len(fused.components()) == 1                 # seams still welded
+    assert fused.cable_length() > 700
+    # ...but it still refuses to bridge a genuine split
+    split = list(skeletonize_block(_split_body(), (0, 0, 0), cfg).values())
+    assert len(fuse_body(split, cfg, body_id=7).components()) == 2
+
+
+def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
+    """A body shorter than postprocess_dust_nm is deleted — surface it as "dust"."""
+    vol = np.zeros((32, 32, 32), np.uint64)
+    vol[8:24, 14:18, 14:18] = 7          # ~128 nm of cable, well under the threshold
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), vol)
+    out = OutputConfig(dst=str(tmp_path / "out"))
+
+    cfg = replace(_cfg(), postprocess_dust_nm=1500.0)
+    summary = skeletonize_segments(src, out, cfg, client=None)
+
+    assert summary["status_counts"].get("dust") == 1
+    assert summary["status_counts"].get("written", 0) == 0
+    assert not os.path.exists(os.path.join(summary["out_dir"], "7"))
+
+    # with the threshold off, the same body survives
+    out2 = OutputConfig(dst=str(tmp_path / "out2"))
+    s2 = skeletonize_segments(src, out2, _cfg(), client=None)
+    assert s2["status_counts"].get("written") == 1

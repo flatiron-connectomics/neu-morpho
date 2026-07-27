@@ -95,20 +95,45 @@ def skeletonize_block(seg_block_zyx: np.ndarray, block_origin_vox_zyx: Sequence[
 # --------------------------------------------------------------------------- #
 # Stage 2: one body
 # --------------------------------------------------------------------------- #
+def join_radius_nm(cfg: SkeletonConfig) -> float:
+    """Resolve ``cfg.join_radius_nm``; ``None`` means "seam scale" (2 voxels)."""
+    if cfg.join_radius_nm is None:
+        return 2.0 * max(cfg.anisotropy)
+    return float(cfg.join_radius_nm)
+
+
 def fuse_body(fragments: Sequence[object], cfg: SkeletonConfig, body_id: int | None = None):
     """Weld a body's block fragments into one skeleton (or None if nothing survives).
 
-    ``join_close_components`` bridges the block seams (fragments already share
-    physical nm coordinates, so seam endpoints are ~a voxel apart);
-    ``postprocess`` then drops dust components and short spurious ticks.
+    Two joins happen, and it matters that they are different:
+
+    1. An explicit ``join_close_components`` bounded by :func:`join_radius_nm`,
+       whose only job is the **block seams**. Fragments already share physical nm
+       coordinates and ``fix_borders`` put their endpoints at the centre of the
+       contact area, so a seam is ~a voxel wide. This is bounded because the join
+       adds a *straight edge between the nearest vertex pair* — with an unbounded
+       radius it will happily bridge a genuine segmentation split with hundreds of
+       nm of cable that no biology produced.
+    2. ``postprocess``, which drops dust components, breaks loops, runs its own
+       ``restrict_by_radius=True`` join (connects two pieces only where the gap is
+       smaller than the sum of their local radii — i.e. their cross-sections
+       nearly touch), then removes short ticks.
+
+    Components too far apart to join are **kept, disconnected**, not discarded —
+    the only thing that deletes a component is ``postprocess``'s dust threshold.
     """
     import kimimaro
+    from osteoid import Skeleton
 
     frags = [f for f in fragments if f is not None and len(f.vertices)]
     if not frags:
         return None
 
-    skel = kimimaro.join_close_components(frags, radius=cfg.join_radius_nm)
+    radius = join_radius_nm(cfg)
+    if radius > 0:
+        skel = kimimaro.join_close_components(frags, radius=radius)
+    else:
+        skel = Skeleton.simple_merge(frags)     # postprocess's own join does the welding
     skel = kimimaro.postprocess(skel, dust_threshold=cfg.postprocess_dust_nm,
                                 tick_threshold=cfg.postprocess_tick_nm)
     if skel is None or len(skel.vertices) == 0:

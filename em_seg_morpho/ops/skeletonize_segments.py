@@ -49,11 +49,19 @@ def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, cfg: SkeletonConfig
 
 def _fuse_one_body(body_id: int, *, chunked_dir: str, out_dir: str,
                    cfg: SkeletonConfig) -> tuple:
-    """Returns ``(body_id, status, metrics)`` — the driver splits off the metrics."""
+    """Returns ``(body_id, status, metrics)`` — the driver splits off the metrics.
+
+    ``empty`` means the body had no fragments; ``dust`` means postprocess consumed
+    it (its whole skeleton was shorter than ``postprocess_dust_nm``). They are
+    distinct statuses because the second is a thresholding decision that silently
+    deletes small bodies, and you should be able to see how often it fires.
+    """
     frags = _frag.read_body_skel_fragments(chunked_dir, body_id, cfg.fragment_format)
+    if not frags:
+        return (body_id, "empty", None)
     skel = fuse_body(frags, cfg, body_id=body_id)
     if skel is None:
-        return (body_id, "empty", None)
+        return (body_id, "dust", None)
     write_body_skeleton(out_dir, body_id, skel)
     return (body_id, "written", skeleton_metrics(skel))
 

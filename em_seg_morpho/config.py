@@ -64,12 +64,24 @@ class SkeletonConfig:
     bbox_margin_vox: int = 2                  # pad the DB bbox when cropping a body
 
     # -- stage 2 fusion. Thresholds are in **nm** (vertices are physical nm). --
-    # join_radius_nm=None means unbounded: every component of a body is joined
-    # into one tree (igneous' default). Bound it (e.g. a few voxels) if you would
-    # rather leave genuinely-separate pieces apart than bridge them with a long
-    # straight edge that inflates cable_length.
+    # join_radius_nm bounds the explicit seam-welding join. Block seams are ~1
+    # voxel wide by construction (fix_borders puts both fragments' endpoints at
+    # the centre of the contact area), so the default only needs to reach that
+    # far. Do NOT raise it to bridge segmentation splits: the join is a straight
+    # edge between the nearest vertex pair, so a wide radius invents cable that
+    # never existed (measured: a 400 nm split doubled cable_length, 416 -> 858).
+    #   None            -> auto, 2 x the largest voxel dimension (seam scale)
+    #   0               -> skip the explicit join; rely on postprocess's own
+    #                      radius-restricted join (joins only where the two
+    #                      pieces' cross-sections nearly touch)
+    #   float("inf")    -> join every component into one tree, at any distance
     join_radius_nm: float | None = None
-    postprocess_dust_nm: float = 1500.0       # drop tiny disconnected components
+    # postprocess: dust removal, loop breaking, a radius-restricted join, then
+    # tick removal. dust_threshold is applied to each COMPONENT of this one body,
+    # so a body whose entire skeleton is shorter than it is deleted outright
+    # (kimimaro's 1500 nm default does this to genuinely small bodies) — the op
+    # reports those as "dust" rather than silently dropping them.
+    postprocess_dust_nm: float = 1500.0       # drop disconnected components shorter than this
     postprocess_tick_nm: float = 3000.0       # drop short spurious side branches
 
     fragment_format: str = "skel"             # per-fragment on-disk extension

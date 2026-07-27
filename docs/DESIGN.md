@@ -83,10 +83,48 @@ Skeletonization mirrors meshing rather than cropping per body:
   shifts vertices to global nm by the block origin, and writes per-(body, block)
   fragments to the fragment store.
 - **Stage 2 `skel-fuse`** — `block_map` over bodies discovered by listing the
-  fragment dirs; `fuse_body` runs `join_close_components` (welds the block seams
-  — `fix_borders` put each fragment's endpoint at the centre of the contact area,
-  so seam endpoints are ~a voxel apart) then `postprocess` (drops dust and short
-  ticks), writes the precomputed skeleton, and reports metrics to the DB.
+  fragment dirs; `fuse_body` welds the seams, writes the precomputed skeleton,
+  and reports metrics to the DB.
+
+### How fusion joins, and why the radius is bounded (measured)
+
+`join_close_components` is greedy single-linkage over components: build a KD-tree
+per component, take the globally nearest vertex pair, add **one straight edge**
+between those two existing vertices, merge, repeat until nothing is closer than
+`radius`. It adds no new vertices, and it joins nearest *vertex* to nearest
+*vertex* — not endpoint to endpoint — so a join can land mid-branch and create a
+spurious branch point. Components left unjoined are **kept, disconnected**; the
+only thing that deletes a component is the dust threshold.
+
+`fuse_body` therefore runs two different joins:
+
+1. An explicit `join_close_components(radius=join_radius_nm)` whose only job is
+   the **block seams**. `fix_borders` puts both fragments' endpoints at the centre
+   of the contact area, so a seam is ~1 voxel wide; the default radius is
+   `2 x max(anisotropy)`, just enough to reach across it.
+2. `postprocess`, which internally runs its own join with `restrict_by_radius=True`
+   — connect two pieces only where the gap is smaller than the sum of their local
+   radii, i.e. their cross-sections nearly touch. This is the principled criterion
+   for repairing a segmentation gap, and it is always on.
+
+Measured on synthetic cases (`tests/test_skeletonize_e2e.py` pins both):
+
+| case | `radius=inf` | default (16 nm) | `radius=0` (postprocess only) |
+|---|---|---|---|
+| rod split by the block grid (~1 voxel seam) | 1 comp, 760 nm | 1 comp, 760 nm | 1 comp, 760 nm |
+| one label, two blobs 400 nm apart | **1 comp, 858 nm** | 2 comps, 416 nm | 2 comps, 416 nm |
+
+The unbounded join more than doubles that body's cable length by inventing a
+442 nm edge — and it does so precisely for the bodies whose segmentation is least
+trustworthy. Hence the seam-scale default. `join_radius_nm=0` skips the explicit
+join entirely and still welds seams via postprocess; `float("inf")` restores the
+join-everything behaviour if a single connected tree per body is what you want.
+
+**The dust threshold deletes small bodies.** `postprocess_dust_nm` (kimimaro's
+1500 nm default) drops every component shorter than itself — and it is applied to
+one body's components, so a body whose *entire* skeleton is shorter than that
+vanishes. The op reports those as status **`dust`**, distinct from `empty` (no
+fragments at all), so the count is visible rather than silent.
 
 **Why block-first**, given skeletons were originally planned per-body: the OOM
 hazard in the crop approach is the bounding-box **extent**, not the voxel count.
@@ -146,11 +184,10 @@ the "need a body's bbox before we can crop it" dependency.
 
 ## Open questions
 
-- **`join_radius_nm` default is unbounded** (igneous' behaviour): every component
-  of a body is joined into one tree. That guarantees one skeleton per body, but
-  bridges genuinely-separate pieces with a long straight edge that inflates
-  `cable_length_nm`. Bounding it to a few voxels would weld only block seams.
-  Decide against real data.
+- **Multi-component bodies are now possible** (the seam-scale join default keeps
+  genuinely-split pieces apart). Decide against real Megaphragma data whether
+  that is what you want downstream, and whether `postprocess_dust_nm` should be
+  lowered so small bodies are not deleted.
 - **Fixed-edge simplification** in stage 1 (preserve block boundaries) — vol2mesh
   `simplify` options TBD.
 - **Meshing DB enrichment** is still unwired: the `assemble` worker should return
