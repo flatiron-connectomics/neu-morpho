@@ -255,6 +255,41 @@ against a dask cluster from `em_blockrun.start_dask`, or in-process with
   **block** (a 256³ uint64 block is 128 MB) rather than one body. Sized to fit
   the smallest node so the job is eligible everywhere.
 
+## Fault policy — asymmetric by design (`ops/_progress.py`)
+
+Task granularity differs per stage, and so does what a failure costs:
+
+| stage | one task is | on failure |
+|---|---|---|
+| `chunk` / `skel-chunk` | one **block** | raise, abort the stage |
+| `assemble` / `skel-fuse` | one **body** | record `failed`, continue |
+
+**Stage 2 isolates** because bodies are independent: skipping a bad one costs
+exactly that body, is recorded in the manifest, is logged with its traceback to
+`dst/failures.{mesh,skel}.jsonl`, and is retried on the next run. One pathological
+body cannot kill hour 11 of a 50k-body run.
+
+**Stage 1 does not**, and that is the point. Stage 2 **aggregates across blocks**,
+so a silently skipped block does not leave a hole in one block — it truncates
+every body passing through it, and erases outright any body lying wholly inside
+it, while the output still looks complete. Stage 2 cannot tell "this body had 3
+fragments" from "it had 4 but one block died". A crash you notice; a truncated
+neuron you may not. Resume already makes relaunching a chunk run cheap: progress
+is recorded per block as results stream back, so only in-flight work is lost.
+
+(This differs from em-volume-tools' conversion, where each block writes an
+independent output chunk and isolation is straightforwardly safe. The difference
+is the aggregating second stage, which is why the question was deferred from
+em-blockrun rather than answered there.)
+
+**The resume trap.** `Manifest.is_done` tests key *presence*, so a recorded
+`failed` reads as done and would never be retried — the tasks most needing a
+retry would be skipped forever. Ops resume on `_progress.is_complete`, which
+excludes `failed`, never on `is_done`.
+
+The driver logs failed body ids per stage and **exits non-zero**, so a scripted
+pipeline does not mistake a partial result for a clean one.
+
 ## Open questions
 
 - **Multi-component bodies are now possible** (the seam-scale join default keeps
@@ -272,8 +307,11 @@ against a dask cluster from `em_blockrun.start_dask`, or in-process with
 - Scale/voxel-size wiring: caller passes `seg_spec` at the meshing scale +
   `occupancy_spec` at a coarse scale, with voxel sizes — keeps the op
   format-agnostic. Could auto-derive from source metadata later.
-- **Fault isolation** (deferred from em-blockrun): a meshing run over many bodies
-  *will* have per-item failures; add `failed`-and-continue to em-blockrun.
+- **`Manifest.is_done` still treats `failed` as done** in em-blockrun itself. We
+  work around it locally with `_progress.is_complete`, but em-blockrun's own
+  docstring invites a `failed` status, so the next consumer will hit the same
+  trap. Worth fixing upstream (an `ignore_statuses` argument) rather than in each
+  caller.
 
 ## Module layout
 

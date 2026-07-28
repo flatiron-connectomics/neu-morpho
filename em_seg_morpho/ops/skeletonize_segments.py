@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import functools
 import json
+import logging
 from typing import Any, Sequence
 
 from em_blockrun import Manifest, block_map, iter_blocks
@@ -33,7 +34,9 @@ from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
                         skeletonize_block)
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import group_counts
+from ._progress import FAILED, group_counts, guarded, is_complete, write_failures
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -53,12 +56,13 @@ def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, cfg: SkeletonConfig
 
 def _fuse_one_body(body_id: int, *, chunked_dir: str, out_dir: str,
                    cfg: SkeletonConfig) -> tuple:
-    """Returns ``(body_id, status, metrics)`` — the driver splits off the metrics.
+    """Returns ``(body_id, status, metrics, info)`` — the driver splits these out.
 
     ``empty`` means the body had no fragments; ``dust`` means postprocess consumed
     it (its whole skeleton was shorter than ``postprocess_dust_nm``). They are
     distinct statuses because the second is a thresholding decision that silently
     deletes small bodies, and you should be able to see how often it fires.
+    Exceptions become ``failed`` via ``_progress.guarded``.
     """
     frags = _frag.read_body_skel_fragments(chunked_dir, body_id, cfg.fragment_format)
     if not frags:
@@ -149,9 +153,11 @@ def skeletonize_segments(
     manifest.load() if resume else manifest.reset()
     fused = 0
     fusion_stats: list[dict] = []       # per-body accounting of what fusion changed
+    failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
     try:
         if "skel-chunk" in stages:
-            todo = [b for b in blocks if not (resume and manifest.is_done("skel-chunk", b.index))]
+            # Stage 1 is deliberately NOT fault-isolated: see ops/_progress.py.
+            todo = [b for b in blocks if not (resume and is_complete(manifest, "skel-chunk", b.index))]
             worker = functools.partial(_chunk_block, seg_spec=seg_spec,
                                        chunked_dir=chunked_dir, cfg=cfg, allow=allow)
             block_map(todo, worker, client=client, npartitions=npartitions,
@@ -161,17 +167,23 @@ def skeletonize_segments(
             bodies = _frag.list_bodies(chunked_dir)
             if allow is not None:
                 bodies = [b for b in bodies if b in allow]
-            todo = [b for b in bodies if not (resume and manifest.is_done("skel-fuse", b))]
+            todo = [b for b in bodies if not (resume and is_complete(manifest, "skel-fuse", b))]
             fused = len(todo)
-            worker = functools.partial(_fuse_one_body, chunked_dir=chunked_dir,
-                                       out_dir=out_dir, cfg=cfg)
+            worker = functools.partial(
+                guarded, functools.partial(_fuse_one_body, chunked_dir=chunked_dir,
+                                           out_dir=out_dir, cfg=cfg))
 
             def on_result(batch):             # runs in the driver (sole DB/manifest writer)
-                for body_id, _status, metrics, stats in batch:
+                for body_id, status, metrics, info in batch:
+                    if status == FAILED:
+                        logger.warning("skel-fuse failed for body %s: %s",
+                                       body_id, (info or {}).get("error"))
+                        failures.append({"body_id": int(body_id), **(info or {})})
+                        continue
                     if db is not None and metrics:
                         db.update_body(body_id, **metrics)
-                    if stats:
-                        fusion_stats.append(stats)
+                    if info:
+                        fusion_stats.append(info)
                 manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
 
             block_map(todo, worker, client=client, npartitions=npartitions, on_result=on_result)
@@ -184,11 +196,17 @@ def skeletonize_segments(
         with open(fusion_stats_path, "w") as f:
             for s in fusion_stats:
                 f.write(json.dumps(s) + "\n")
+    failures_path = write_failures(out.dst.rstrip("/") + "/failures.skel.jsonl", failures)
+    if failures:
+        logger.warning("skel-fuse: %d bodies failed and were skipped -> %s "
+                       "(re-run to retry them)", len(failures), failures_path)
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_fused": fused,
             "status_counts": group_counts(manifest, "skel-fuse"),
             "chunk_counts": group_counts(manifest, "skel-chunk"),
+            "failed_bodies": [f["body_id"] for f in failures],
+            "failures_path": failures_path,
             "fusion_stats": fusion_stats_summary(fusion_stats),
             "fusion_stats_path": fusion_stats_path if fusion_stats else None,
             "progress_path": progress}

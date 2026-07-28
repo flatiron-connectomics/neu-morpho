@@ -15,6 +15,7 @@ stays format-agnostic (precomputed scale_index / zarr level).
 from __future__ import annotations
 
 import functools
+import logging
 import os
 from typing import Any, Sequence
 
@@ -28,7 +29,9 @@ from ..occupancy import occupied_blocks
 from ..precomputed import write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import group_counts
+from ._progress import FAILED, group_counts, guarded, is_complete, write_failures
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -47,19 +50,20 @@ def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfi
 
 def _assemble_body(body_id: int, *, chunked_dir: str, out_dir: str, mesh_cfg: MeshConfig,
                    chunk_shape_xyz: Sequence[int], grid_origin_xyz: Sequence[int]) -> tuple:
-    """Returns ``(body_id, status, metrics)`` — the driver splits off the metrics.
+    """Returns ``(body_id, status, metrics, info)`` — the driver splits these out.
 
     Metrics are taken from the assembled LOD-0 mesh, before
     ``write_body_multires`` decimates it in place for the coarser LODs.
+    Exceptions become ``failed`` via ``_progress.guarded``.
     """
     frags = _frag.read_body_fragments(chunked_dir, body_id, mesh_cfg.fragment_format)
     if not frags:
-        return (body_id, "empty", None)
+        return (body_id, "empty", None, {})
     mesh = assemble_body(frags, mesh_cfg)
     metrics = mesh_metrics(mesh)
     n = write_body_multires(out_dir, body_id, mesh, mesh_cfg,
                             chunk_shape_xyz=chunk_shape_xyz, grid_origin_xyz=grid_origin_xyz)
-    return (body_id, "written" if n else "empty", metrics if n else None)
+    return (body_id, "written" if n else "empty", metrics if n else None, {})
 
 
 # --------------------------------------------------------------------------- #
@@ -133,9 +137,11 @@ def meshify(
 
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
+    failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
     try:
         if "chunk" in stages:
-            todo = [b for b in blocks if not (resume and manifest.is_done("chunk", b.index))]
+            # Stage 1 is deliberately NOT fault-isolated: see ops/_progress.py.
+            todo = [b for b in blocks if not (resume and is_complete(manifest, "chunk", b.index))]
             worker = functools.partial(_chunk_block, seg_spec=seg_spec, chunked_dir=chunked_dir,
                                        mesh_cfg=mesh_cfg, allow=allow,
                                        mesh_voxel_size=tuple(mesh_voxel_size))
@@ -147,18 +153,24 @@ def meshify(
             bodies = _frag.list_bodies(chunked_dir)
             if allow is not None:
                 bodies = [b for b in bodies if b in allow]
-            todo = [b for b in bodies if not (resume and manifest.is_done("assemble", b))]
+            todo = [b for b in bodies if not (resume and is_complete(manifest, "assemble", b))]
             assembled = len(todo)
-            worker = functools.partial(_assemble_body, chunked_dir=chunked_dir, out_dir=out_dir,
-                                       mesh_cfg=mesh_cfg, chunk_shape_xyz=chunk_shape_xyz,
-                                       grid_origin_xyz=grid_origin_xyz)
+            worker = functools.partial(
+                guarded, functools.partial(_assemble_body, chunked_dir=chunked_dir,
+                                           out_dir=out_dir, mesh_cfg=mesh_cfg,
+                                           chunk_shape_xyz=chunk_shape_xyz,
+                                           grid_origin_xyz=grid_origin_xyz))
 
             def on_result(batch):         # runs in the driver (sole DB/manifest writer)
-                if db is not None:
-                    for body_id, _status, metrics in batch:
-                        if metrics:
-                            db.update_body(body_id, **metrics)
-                manifest.record("assemble", [(b, s) for b, s, _ in batch])
+                for body_id, status, metrics, info in batch:
+                    if status == FAILED:
+                        logger.warning("assemble failed for body %s: %s",
+                                       body_id, (info or {}).get("error"))
+                        failures.append({"body_id": int(body_id), **(info or {})})
+                        continue
+                    if db is not None and metrics:
+                        db.update_body(body_id, **metrics)
+                manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
 
             block_map(todo, worker, client=client, npartitions=npartitions,
                       on_result=on_result)
@@ -167,8 +179,15 @@ def meshify(
         if db is not None:
             db.close()
 
+    failures_path = write_failures(out.dst.rstrip("/") + "/failures.mesh.jsonl", failures)
+    if failures:
+        logger.warning("assemble: %d bodies failed and were skipped -> %s "
+                       "(re-run to retry them)", len(failures), failures_path)
+
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_assembled": assembled,
             "status_counts": group_counts(manifest, "assemble"),
             "chunk_counts": group_counts(manifest, "chunk"),
+            "failed_bodies": [f["body_id"] for f in failures],
+            "failures_path": failures_path,
             "progress_path": progress}

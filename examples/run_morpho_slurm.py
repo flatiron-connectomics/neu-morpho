@@ -204,8 +204,20 @@ def main(argv=None) -> int:
     with open(f"{dst}/run_summary.json", "w") as f:
         json.dump({k: {kk: vv for kk, vv in v.items()} for k, v in summaries.items()},
                   f, indent=2, default=str)
+
+    # Isolated per-body failures do not stop the run, so say so loudly and exit
+    # non-zero — otherwise a scripted pipeline treats a partial result as clean.
+    failed = {stage: s.get("failed_bodies") or [] for stage, s in summaries.items()}
+    n_failed = sum(len(v) for v in failed.values())
+    if n_failed:
+        for stage, bodies in failed.items():
+            if bodies:
+                log.warning("%s: %d bodies FAILED and were skipped: %s%s", stage, len(bodies),
+                            bodies[:10], " ..." if len(bodies) > 10 else "")
+                log.warning("%s: tracebacks in %s; re-run to retry them",
+                            stage, summaries[stage].get("failures_path"))
     log.info("done -> %s", f"{dst}/run_summary.json")
-    return 0
+    return 1 if n_failed else 0
 
 
 if __name__ == "__main__":
