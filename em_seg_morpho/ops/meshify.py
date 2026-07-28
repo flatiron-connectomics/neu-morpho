@@ -27,6 +27,8 @@ from ..mesh import assemble_body, mesh_block
 from ..occupancy import occupied_blocks
 from ..precomputed import write_body_multires, write_mesh_info
 from .. import fragments as _frag
+from .. import roi as _roi
+from ._progress import group_counts
 
 
 # --------------------------------------------------------------------------- #
@@ -66,12 +68,19 @@ def meshify(
     allowlist: Any = None,
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
+    roi: Sequence[int] | str | None = None,
     stages: Sequence[str] = ("chunk", "assemble"),
     client: Any | None = None,
     npartitions: int | None = None,
     resume: bool = True,
 ) -> dict:
-    """Mesh a segmentation body-by-body via block-first chunking + assembly."""
+    """Mesh a segmentation body-by-body via block-first chunking + assembly.
+
+    ``roi`` (``"z0,y0,x0,z1,y1,x1"`` or a 6-sequence, in mesh-scale voxels)
+    restricts stage 1 to the blocks intersecting it, on the same global grid, so a
+    trial run is a prefix of the full run (see roi.py). A body straddling the ROI
+    edge is meshed only from the blocks inside it.
+    """
     from em_volume_tools.backends.base import open_backend
 
     mesh_cfg = mesh_cfg or MeshConfig()
@@ -79,7 +88,8 @@ def meshify(
 
     shape = open_backend(seg_spec).shape                        # (z, y, x) at mesh scale
     grid_shape = tuple(-(-shape[a] // mesh_cfg.block_shape[a]) for a in range(3))
-    blocks = list(iter_blocks(shape, mesh_cfg.block_shape))
+    roi = _roi.clip_to_shape(_roi.parse_roi(roi), shape)
+    blocks = _roi.filter_blocks(iter_blocks(shape, mesh_cfg.block_shape), roi)
 
     if occupancy_spec is not None:
         if occupancy_voxel_size is None:
@@ -129,4 +139,7 @@ def meshify(
         manifest.close()
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
-            "status_counts": manifest.counts(), "progress_path": progress}
+            "num_bodies_assembled": assembled,
+            "status_counts": group_counts(manifest, "assemble"),
+            "chunk_counts": group_counts(manifest, "chunk"),
+            "progress_path": progress}

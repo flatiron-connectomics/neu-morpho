@@ -219,6 +219,34 @@ the "need a body's bbox before we can crop it" dependency.
   `postprocess_tick_nm` (all in nm, since vertices are nm).
 - `OutputConfig`.
 
+## Running a job (`examples/run_morpho_slurm.py`, `configs/`)
+
+One driver runs `index -> allowlist -> mesh -> skel` (`--stages` picks a subset)
+against a dask cluster from `em_blockrun.start_dask`, or in-process with
+`--serial`. See the README for invocations.
+
+- **ROI (`roi.py`)** — `--roi z0,y0,x0,z1,y1,x1` filters blocks of the **global**
+  grid rather than re-tiling a sub-volume. Block indices, regions and nm
+  coordinates are therefore identical in an ROI run and the eventual full run, so
+  a trial is a *prefix*: widening the ROI reuses the fragments and manifest
+  entries already written. Blocks intersecting the ROI are kept **whole**, never
+  clipped — clipping would make a block's content depend on the ROI, and the same
+  block index would then mean different data in two runs, so resume would reuse
+  the wrong fragment. A body straddling the ROI edge is truncated until its
+  neighbouring blocks run.
+- **Scales (`scales.py`)** — the driver takes scale *integers* and reads each
+  level's real voxel size from the precomputed `info` / zarr OME metadata.
+  `ScaleInfo.factor_from` gives true per-axis factors, which are routinely not
+  `2**index`: a pyramid that halves x/y but leaves z alone has factor `(1,2,2)`.
+  Feeding the coords contract an assumed factor is precisely how meshes and
+  skeletons end up in different spaces.
+- **Cluster sizing (`configs/`)** — `dask-slurm-any.yaml` sets **no**
+  `--constraint`. Rusty's `gen` partition mixes rome (128c/1 TB), icelake
+  (64c/1 TB) and genoa (96c/1.5 TB); pinning to genoa would drop ~2/3 of eligible
+  nodes to buy memory this workload does not use, because the peak is one
+  **block** (a 256³ uint64 block is 128 MB) rather than one body. Sized to fit
+  the smallest node so the job is eligible everywhere.
+
 ## Open questions
 
 - **Multi-component bodies are now possible** (the seam-scale join default keeps
@@ -250,9 +278,16 @@ em_seg_morpho/
 ├── precomputed.py    # mesh info/multires + skeleton info/blob (zyx->xyz flip lives here)
 ├── skeleton.py       # kimimaro: skeletonize_block (stage 1), fuse_body + metrics (stage 2)
 ├── metrics_db.py     # SQLite per-body metrics (bbox/count/volume + enrichment)
+├── roi.py            # restrict a run to part of the volume, on the global grid
+├── scales.py         # per-level shape + true voxel size from source metadata
 ├── skelcompare.py    # skeletonization comparison harness (kimimaro vs skeletor) + 3D viz
 └── ops/
     ├── meshify.py              # two-stage meshing orchestration via em-blockrun
     ├── skeletonize_segments.py # two-stage skeletonization (skel-chunk / skel-fuse)
-    └── index_segments.py       # parallel scan -> per-body metrics DB (bbox/count)
+    ├── index_segments.py       # parallel scan -> per-body metrics DB (bbox/count)
+    └── _progress.py            # per-group manifest tallies
+
+examples/run_morpho_slurm.py  # the driver: index -> allowlist -> mesh -> skel
+configs/dask-{local,slurm-any}.yaml
+scripts/sweep_postprocess.py  # standalone: choose dust/tick thresholds from data
 ```

@@ -17,6 +17,7 @@ import numpy as np
 from em_blockrun import block_map, iter_blocks
 
 from ..metrics_db import MetricsDB
+from .. import roi as _roi
 
 
 def _block_key(index) -> str:
@@ -59,6 +60,7 @@ def index_segments(
     scan_scale: int = 0,
     fullres_factor: Sequence[int] | None = None,
     block_shape: Sequence[int] = (256, 256, 256),
+    roi: Sequence[int] | str | None = None,
     client: Any | None = None,
     npartitions: int | None = None,
     resume: bool = True,
@@ -67,13 +69,19 @@ def index_segments(
 
     ``scan_voxel_size`` (nm, zyx) is that scale's voxel size (for volume). Bbox is
     stored in full-res voxels via ``fullres_factor`` (default ``2**scan_scale``).
+
+    ``roi`` (scan-scale voxels) restricts the scan to the blocks intersecting it,
+    on the same global grid. Bear in mind the resulting bboxes and voxel counts
+    then describe only the scanned portion of each body — fine for driving a trial
+    run, not a substitute for a full index.
     """
     fullres_factor = tuple(fullres_factor or (2 ** scan_scale,) * 3)
     voxel_volume = float(np.prod(scan_voxel_size))
 
     from em_volume_tools.backends.base import open_backend
     shape = open_backend(seg_spec).shape
-    blocks = list(iter_blocks(shape, block_shape))
+    roi = _roi.clip_to_shape(_roi.parse_roi(roi), shape)
+    blocks = _roi.filter_blocks(iter_blocks(shape, block_shape), roi)
 
     db = MetricsDB(db_path)
     done = db.done_blocks() if resume else (db.reset_index() or set())

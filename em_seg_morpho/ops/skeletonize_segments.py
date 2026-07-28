@@ -32,6 +32,8 @@ from ..precomputed import write_body_skeleton, write_skeleton_info
 from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
                         skeletonize_block)
 from .. import fragments as _frag
+from .. import roi as _roi
+from ._progress import group_counts
 
 
 # --------------------------------------------------------------------------- #
@@ -80,6 +82,7 @@ def skeletonize_segments(
     allowlist: Any = None,
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
+    roi: Sequence[int] | str | None = None,
     db_path: str | None = None,
     fusion_stats_path: str | None = None,
     stages: Sequence[str] = ("skel-chunk", "skel-fuse"),
@@ -94,6 +97,12 @@ def skeletonize_segments(
     branch/tip counts, max radius) are written to the metrics DB by the driver,
     which is its sole writer.
 
+    ``roi`` (``"z0,y0,x0,z1,y1,x1"`` or a 6-sequence, in skeleton-scale voxels)
+    restricts stage 1 to the blocks intersecting it, on the same global grid — so
+    a trial run is a prefix of the full run, not a separate one. Note that a body
+    straddling the ROI edge is skeletonized only from the blocks inside it, so its
+    skeleton is truncated until the neighbouring blocks are run.
+
     The returned ``fusion_stats`` totals what stage 2 threw away (dust components,
     ticks) and what it inferred (join edges) — the numbers to look at when
     choosing ``postprocess_dust_nm`` / ``postprocess_tick_nm``. Pass
@@ -106,7 +115,10 @@ def skeletonize_segments(
 
     shape = open_backend(seg_spec).shape                     # (z, y, x) at skeleton scale
     grid_shape = tuple(-(-shape[a] // cfg.block_shape[a]) for a in range(3))
-    blocks = list(iter_blocks(shape, cfg.block_shape))
+    # Tile the FULL grid, then filter — block indices and regions stay identical
+    # to a full run, so an ROI run's fragments and manifest carry over (roi.py).
+    roi = _roi.clip_to_shape(_roi.parse_roi(roi), shape)
+    blocks = _roi.filter_blocks(iter_blocks(shape, cfg.block_shape), roi)
 
     if occupancy_spec is not None:
         if occupancy_voxel_size is None:
@@ -173,17 +185,8 @@ def skeletonize_segments(
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_fused": fused,
-            "status_counts": _group_counts(manifest, "skel-fuse"),
-            "chunk_counts": _group_counts(manifest, "skel-chunk"),
+            "status_counts": group_counts(manifest, "skel-fuse"),
+            "chunk_counts": group_counts(manifest, "skel-chunk"),
             "fusion_stats": fusion_stats_summary(fusion_stats),
             "fusion_stats_path": fusion_stats_path if fusion_stats else None,
             "progress_path": progress}
-
-
-def _group_counts(manifest: Manifest, group: str) -> dict[str, int]:
-    """Per-group status tallies (``Manifest.counts`` aggregates every group)."""
-    out: dict[str, int] = {}
-    for key in manifest.done_keys(group):
-        status = manifest.status(group, key)
-        out[status] = out.get(status, 0) + 1
-    return out

@@ -211,10 +211,13 @@ def test_default_tick_threshold_runs():
     concatenates more). Every earlier test set tick=0, which short-circuits
     remove_ticks entirely — so the shipped tick default was never executed.
     """
-    # 32 nm voxels so the trunk clears the 1500 nm dust default
+    # 32 nm voxels so the ~88-voxel trunk (2816 nm) clears any sane dust default
     cfg = SkeletonConfig(anisotropy=(32.0, 32.0, 32.0), block_shape=(32, 32, 32),
                          const=30.0, dust_threshold=0)
-    assert (cfg.postprocess_dust_nm, cfg.postprocess_tick_nm) == (1500.0, 3000.0)
+    # Deliberately not pinning the values — they are tuned per dataset. What must
+    # hold is that the shipped tick default is non-zero, i.e. remove_ticks really
+    # runs; a zero default would short-circuit it and re-hide the dtype crash.
+    assert cfg.postprocess_tick_nm > 0
 
     fused = fuse_body(_arbor_frags(cfg), cfg, body_id=7)      # must not raise
     assert fused is not None and len(fused.vertices) > 0
