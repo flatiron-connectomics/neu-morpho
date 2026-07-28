@@ -40,13 +40,15 @@ from em_blockrun import start_dask
 
 from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from em_seg_morpho.metrics_db import MetricsDB
-from em_seg_morpho.ops import index_segments, meshify, skeletonize_segments
+from em_seg_morpho.ops import (export_roi_seg, index_segments, meshify,
+                               skeletonize_segments)
+from em_seg_morpho.precomputed import link_subresources
 from em_seg_morpho.roi import parse_roi, scale_roi
 from em_seg_morpho.scales import describe, read_scales, scale_spec
 
 log = logging.getLogger("em-seg-morpho")
 
-STAGES = ("index", "mesh", "skel")
+STAGES = ("seg", "index", "mesh", "skel")
 
 
 def _parse_args(argv=None):
@@ -58,7 +60,10 @@ def _parse_args(argv=None):
                    help="print the source pyramid and exit (no cluster, no writes)")
 
     p.add_argument("--stages", default="index,mesh,skel",
-                   help=f"comma-separated subset of {','.join(STAGES)}")
+                   help=f"comma-separated subset of {','.join(STAGES)}; 'seg' copies the "
+                        "ROI's labels out as a precomputed volume for viewing")
+    p.add_argument("--seg-encoding", default="compressed_segmentation",
+                   help="encoding for the exported segmentation (or 'raw')")
     p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 in mesh/skeleton-scale voxels")
     p.add_argument("--roi-scale", type=int, default=None,
                    help="scale the --roi values are given in (default: --mesh-scale)")
@@ -160,6 +165,16 @@ def main(argv=None) -> int:
     summaries: dict[str, dict] = {}
 
     def run_all(client):
+        if "seg" in stages:
+            t = time.time()
+            summaries["seg"] = export_roi_seg(
+                scale_spec(args.src, mesh_s.index), out.volume_dir(),
+                roi=roi_mesh, voxel_size=mesh_s.voxel_size, block_shape=block,
+                encoding=args.seg_encoding, client=client, resume=resume)
+            log.info("seg: region=%s %.1f Mvox -> %s  (%.1f min)",
+                     summaries["seg"]["region"], summaries["seg"]["n_voxels"] / 1e6,
+                     summaries["seg"]["out_dir"], (time.time() - t) / 60)
+
         if "index" in stages:
             t = time.time()
             summaries["index"] = index_segments(
@@ -209,6 +224,21 @@ def main(argv=None) -> int:
     with open(f"{dst}/run_summary.json", "w") as f:
         json.dump({k: {kk: vv for kk, vv in v.items()} for k, v in summaries.items()},
                   f, indent=2, default=str)
+
+    # Point the volume info at whichever subresources now exist, so one
+    # neuroglancer layer carries labels + meshes + skeletons. Done last because
+    # the seg stage rewrites info, which would drop the keys.
+    vol = out.volume_dir()
+    if os.path.exists(os.path.join(vol, "info")):
+        subs = {k: d for k, d in (("mesh", mesh_cfg and out.mesh_dir),
+                                  ("skeletons", out.skeleton_dir))
+                if os.path.isdir(os.path.join(vol, d))}
+        if subs:
+            log.info("volume info -> %s", link_subresources(vol, **subs))
+        log.info("neuroglancer source: precomputed://file://%s", vol)
+    else:
+        log.warning("no volume at %s — run --stages seg to export the labels, "
+                    "otherwise meshes/skeletons have no volume to attach to", vol)
 
     # Isolated per-body failures do not stop the run, so say so loudly and exit
     # non-zero — otherwise a scripted pipeline treats a partial result as clean.

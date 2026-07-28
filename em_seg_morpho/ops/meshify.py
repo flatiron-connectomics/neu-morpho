@@ -125,7 +125,7 @@ def meshify(
                                    allowlist=allow)
         blocks = [b for b in blocks if b.index in occupied]
 
-    out_dir = out.dst.rstrip("/") + "/" + out.mesh_dir
+    out_dir = out.volume_dir() + "/" + out.mesh_dir.strip("/")   # inside the volume
     chunked_dir = out.chunked_dir or (out.dst.rstrip("/") + "/chunked")
     # INSIDE dst, like the fragments and the metrics DB. A manifest sitting beside
     # dst outlives `rm -rf dst`, and the next run then skips every task as "done"

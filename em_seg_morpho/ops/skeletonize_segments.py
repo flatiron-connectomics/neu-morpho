@@ -144,7 +144,7 @@ def skeletonize_segments(
                                    allowlist=allow)
         blocks = [b for b in blocks if b.index in occupied]
 
-    out_dir = out.dst.rstrip("/") + "/" + out.skeleton_dir
+    out_dir = out.volume_dir() + "/" + out.skeleton_dir.strip("/")   # inside the volume
     chunked_dir = out.skel_chunked_dir or (out.dst.rstrip("/") + "/skel_chunked")
     # INSIDE dst (see meshify): a manifest beside dst survives `rm -rf dst`, and
     # the next run then skips everything as done and writes nothing.

@@ -109,14 +109,26 @@ class SkeletonConfig:
 class OutputConfig:
     """Where results go."""
 
-    dst: str = ""                            # final multires meshes (local or s3://)
+    dst: str = ""                            # run root: the volume + all bookkeeping
+
+    # The published neuroglancer volume is dst/<seg_dir>, and meshes/skeletons go
+    # INSIDE it — the precomputed spec's `mesh` / `skeletons` info keys name
+    # subdirectories of the volume root, so one layer carries labels, meshes and
+    # skeletons together. Run bookkeeping (metrics.db, manifests, fragments, logs)
+    # deliberately stays in dst, OUTSIDE the volume, so the volume is servable.
+    seg_dir: str = "segmentation"            # the precomputed volume, under dst
+    mesh_dir: str = "mesh"                   # subdirectory of the VOLUME
+    skeleton_dir: str = "skeleton"           # subdirectory of the VOLUME
+
     chunked_dir: str = ""                    # stage-1 fragments (local/ceph); default dst+"/chunked"
     skel_chunked_dir: str = ""               # stage-1 skeleton fragments; default dst+"/skel_chunked"
-    mesh_dir: str = "mesh"                   # multires mesh subpath under dst
-    skeleton_dir: str = "skeleton"
     # em-blockrun manifest. Defaults to dst/progress.{mesh,skel}.jsonl — INSIDE
     # dst deliberately, so deleting the output also clears the record of it. A
     # manifest that outlives its outputs makes the next run skip everything as
     # "already done" and report success having written nothing.
     progress_path: str | None = None
     extra: dict = field(default_factory=dict)
+
+    def volume_dir(self) -> str:
+        """The precomputed volume root — what you point neuroglancer at."""
+        return self.dst.rstrip("/") + "/" + self.seg_dir.strip("/")

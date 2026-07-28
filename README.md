@@ -43,6 +43,20 @@ squeue -u "$USER"
 # 3. widen or drop --roi for the whole volume; step 2's work is reused
 ```
 
+The `seg` stage copies the ROI's labels out as a precomputed volume and the
+meshes and skeletons are written **inside** it, so a single neuroglancer layer
+carries all three:
+
+```
+precomputed://file:///mnt/ceph/.../morpho/segmentation
+```
+
+That volume's `info` gets `"mesh": "mesh"` and `"skeletons": "skeleton"` (the
+precomputed spec's subdirectory-naming keys), and the copy carries `voxel_offset`
+so it lands at its true global position rather than at the origin. Everything
+else the run produces — `metrics.db`, manifests, failure logs, stage-1 fragments
+— stays in `--dst` outside the volume, so the volume is servable as-is.
+
 `--dry-run` reports the plan (scales, voxel sizes, block counts per stage)
 without touching anything — worth running before any large job.
 

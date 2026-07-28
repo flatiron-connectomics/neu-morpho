@@ -255,6 +255,43 @@ against a dask cluster from `em_blockrun.start_dask`, or in-process with
   **block** (a 256³ uint64 block is 128 MB) rather than one body. Sized to fit
   the smallest node so the job is eligible everywhere.
 
+## Output layout — one self-contained neuroglancer volume
+
+Meshes and skeletons are only inspectable next to the labels they came from, so
+the run produces a **single precomputed segmentation volume with them inside it**,
+per the [precomputed spec][spec]: a segmentation volume's `info` may carry `mesh`
+and `skeletons` keys, each *naming a subdirectory of the volume root*. With those
+set, one neuroglancer layer shows labels + meshes + skeletons together.
+
+```
+dst/                          # run root — bookkeeping, NOT served
+├── segmentation/             # <- point neuroglancer here
+│   ├── info                  #    ..., "mesh": "mesh", "skeletons": "skeleton"
+│   ├── 32_32_32/ 64_64_64/ …
+│   ├── mesh/       info (neuroglancer_multilod_draco) + <id>, <id>.index
+│   └── skeleton/   info (neuroglancer_skeletons)      + <id>
+├── metrics.db  progress.*.jsonl  failures.*.jsonl  fusion_stats.jsonl
+└── chunked/  skel_chunked/       # stage-1 fragments
+```
+
+Run bookkeeping stays in `dst`, deliberately outside the volume, so the volume is
+servable as-is. `OutputConfig.mesh_dir` / `skeleton_dir` are therefore
+subdirectories of the **volume**, not of `dst`.
+
+The `seg` stage (`ops/export_roi_seg`, wrapping `em_volume_tools.extract_roi`)
+copies the ROI's labels into that volume. It exports the **block-aligned** region,
+matching what was actually meshed, and — the load-bearing part — the copy carries
+`voxel_offset` so neuroglancer places it at its true global position. Without that
+the labels sit at the origin while the meshes sit tens of microns away, which is
+the alignment bug reintroduced at the viewing layer.
+
+`precomputed.link_subresources` writes the `info` keys and validates each target
+directory's `@type`, because pointing a volume at the wrong subdirectory fails
+*silently* in the viewer. The driver calls it last, since the `seg` stage rewrites
+`info` and would otherwise drop the keys.
+
+[spec]: https://github.com/google/neuroglancer/blob/master/src/datasource/precomputed/volume.md
+
 ## Fault policy — asymmetric by design (`ops/_progress.py`)
 
 Task granularity differs per stage, and so does what a failure costs:

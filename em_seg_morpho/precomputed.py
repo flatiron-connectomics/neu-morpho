@@ -129,6 +129,57 @@ def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
 # --------------------------------------------------------------------------- #
 # Skeletons
 # --------------------------------------------------------------------------- #
+def link_subresources(volume_dir: str, *, mesh: str | None = None,
+                      skeletons: str | None = None,
+                      segment_properties: str | None = None) -> dict:
+    """Point a precomputed segmentation volume's ``info`` at its subdirectories.
+
+    Per the precomputed spec, a segmentation volume's ``info`` may carry ``mesh``,
+    ``skeletons`` and ``segment_properties`` keys, each **naming a subdirectory**
+    of the volume root. With them set, one neuroglancer layer shows the labels,
+    their meshes and their skeletons together; without them the meshes and
+    skeletons are separate sources the viewer has no reason to associate.
+
+    Each named subdirectory must exist and carry the right ``@type`` — pointing
+    the volume at the wrong directory fails silently in the viewer, so it is
+    checked here instead. Returns the keys that were set.
+    """
+    expected = {"mesh": "neuroglancer_multilod_draco",
+                "skeletons": "neuroglancer_skeletons"}
+    info_path = os.path.join(volume_dir, "info")
+    with open(info_path) as f:
+        info = json.load(f)
+    if info.get("type") != "segmentation":
+        raise ValueError(f"{info_path} is not a segmentation volume "
+                         f"(type={info.get('type')!r}); mesh/skeletons do not apply")
+
+    changed: dict[str, str] = {}
+    for key, sub in (("mesh", mesh), ("skeletons", skeletons),
+                     ("segment_properties", segment_properties)):
+        if sub is None:
+            continue
+        sub_dir = os.path.join(volume_dir, sub)
+        if not os.path.isdir(sub_dir):
+            raise FileNotFoundError(
+                f"info would point {key!r} at {sub!r}, which is not a directory "
+                f"under {volume_dir}")
+        want = expected.get(key)
+        if want:
+            with open(os.path.join(sub_dir, "info")) as f:
+                got = json.load(f).get("@type")
+            if got != want:
+                raise ValueError(f"{sub}/info has @type {got!r}, expected {want!r} "
+                                 f"for the {key!r} key")
+        info[key] = sub
+        changed[key] = sub
+
+    tmp = info_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(info, f, indent=2)
+    os.replace(tmp, info_path)          # never leave a half-written volume info
+    return changed
+
+
 def write_skeleton_info(output_dir: str, *, transform: Sequence[float] | None = None,
                         vertex_attributes: Sequence[dict] | None = None) -> None:
     """Write the ``neuroglancer_skeletons`` ``info`` (once per output volume).

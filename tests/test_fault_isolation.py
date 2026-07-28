@@ -315,8 +315,8 @@ def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monke
     written = {r[0] for r in db.con.execute(
         "SELECT body_id FROM bodies WHERE cable_length_nm IS NOT NULL")}
     db.close()
-    on_disk = {int(f) for f in os.listdir(os.path.join(str(tmp_path / "out"), "skeleton"))
-               if f.isdigit()}
+    skel_dir = os.path.join(out.volume_dir(), out.skeleton_dir)   # inside the volume
+    on_disk = {int(f) for f in os.listdir(skel_dir) if f.isdigit()}
     assert on_disk == written, "a skeleton on disk without metrics in the DB"
 
 
