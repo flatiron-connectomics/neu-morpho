@@ -178,6 +178,149 @@ def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# The failure breaker
+# --------------------------------------------------------------------------- #
+def test_is_systemic_classification():
+    import errno as E
+
+    from em_seg_morpho.ops._progress import is_systemic
+
+    assert is_systemic(MemoryError())
+    assert is_systemic(ImportError("no module"))
+    assert is_systemic(OSError(E.ENOSPC, "No space left on device"))
+    assert is_systemic(OSError(E.EDQUOT, "Disk quota exceeded"))
+    # a one-off bad body, or a transient read — isolate these, do not abort
+    assert not is_systemic(ValueError("degenerate mesh"))
+    assert not is_systemic(RuntimeError("kimimaro barfed"))
+    assert not is_systemic(OSError(E.EIO, "transient read error"))
+
+
+def test_guarded_flags_systemic_errors():
+    def oom(key):
+        raise MemoryError()
+
+    def odd(key):
+        raise ValueError("weird body")
+
+    assert guarded(oom, 1)[3]["systemic"] is True
+    assert guarded(odd, 1)[3]["systemic"] is False
+
+
+def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
+    from em_seg_morpho.ops._progress import FailureBreaker, StageAborted
+
+    b = FailureBreaker(max_consecutive=3)
+    for i in range(2):
+        b.failure(i, {"error": "boom"})
+    b.check()                       # 2 < 3, still going
+    b.success()                     # a success resets the streak
+    for i in range(2):
+        b.failure(i, {"error": "boom"})
+    b.check()                       # streak restarted, still 2
+
+    b.failure(99, {"error": "boom"})
+    with pytest.raises(StageAborted, match="3 consecutive"):
+        b.check()
+    assert b.total == 5             # total counts every failure, streak or not
+
+
+def test_breaker_trips_immediately_on_systemic():
+    from em_seg_morpho.ops._progress import FailureBreaker, StageAborted
+
+    b = FailureBreaker(max_consecutive=1000)
+    b.failure(7, {"error": "MemoryError: ", "systemic": True})
+    with pytest.raises(StageAborted, match="systemic"):
+        b.check()
+
+
+def test_breaker_can_be_disabled():
+    from em_seg_morpho.ops._progress import FailureBreaker
+
+    b = FailureBreaker(max_consecutive=0)
+    for i in range(50):
+        b.failure(i, {"error": "boom"})
+    b.check()                       # never trips
+    assert b.total == 50
+
+
+def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path, monkeypatch):
+    """The breaker must not cost us the record of what already happened."""
+    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    from em_seg_morpho.ops._progress import StageAborted
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
+    out = OutputConfig(dst=str(tmp_path / "out"))
+
+    def always_fail(*a, **k):
+        raise ValueError("everything is broken")
+
+    monkeypatch.setattr(mod, "fuse_body", always_fail)
+    with pytest.raises(StageAborted, match="2 consecutive"):
+        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),
+                             max_consecutive_failures=2, client=None)
+
+    # written in `finally`, so the abort still leaves the tracebacks behind
+    path = os.path.join(str(tmp_path / "out"), "failures.skel.jsonl")
+    rows = [json.loads(ln) for ln in open(path)]
+    assert len(rows) == 2 and "everything is broken" in rows[0]["error"]
+
+    # and the failures are recorded as retryable, not as done
+    from em_blockrun import Manifest
+    m = Manifest(os.path.join(str(tmp_path / "out"), "progress.skel.jsonl")).load()
+    assert not is_complete(m, "skel-fuse", rows[0]["body_id"])
+
+
+def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
+    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    from em_seg_morpho.ops._progress import StageAborted
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
+    out = OutputConfig(dst=str(tmp_path / "out"))
+    seen = {"n": 0}
+
+    def oom(*a, **k):
+        seen["n"] += 1
+        raise MemoryError()
+
+    monkeypatch.setattr(mod, "fuse_body", oom)
+    with pytest.raises(StageAborted, match="systemic"):
+        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG),
+                             max_consecutive_failures=1000, client=None)
+    assert seen["n"] == 1          # stopped at the first body, not all three
+
+
+def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monkeypatch):
+    """A trip must not leave a body's skeleton on disk without its DB metrics."""
+    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    from em_seg_morpho.metrics_db import MetricsDB
+    from em_seg_morpho.ops._progress import StageAborted
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
+    out = OutputConfig(dst=str(tmp_path / "out"))
+    db_path = str(tmp_path / "m.db")
+    real = mod.fuse_body
+
+    def fail_first(fragments, cfg_, body_id=None, stats=None):
+        if body_id == 7:
+            raise ValueError("first body fails")
+        return real(fragments, cfg_, body_id=body_id, stats=stats)
+
+    monkeypatch.setattr(mod, "fuse_body", fail_first)
+    # trips on the very first failure, but bodies 8 and 9 already succeeded
+    with pytest.raises(StageAborted):
+        skeletonize_segments(src, out, SkeletonConfig(**SKEL_CFG), db_path=db_path,
+                             max_consecutive_failures=1, client=None)
+
+    db = MetricsDB(db_path)
+    written = {r[0] for r in db.con.execute(
+        "SELECT body_id FROM bodies WHERE cable_length_nm IS NOT NULL")}
+    db.close()
+    on_disk = {int(f) for f in os.listdir(os.path.join(str(tmp_path / "out"), "skeleton"))
+               if f.isdigit()}
+    assert on_disk == written, "a skeleton on disk without metrics in the DB"
+
+
+# --------------------------------------------------------------------------- #
 # Stage 1 does NOT isolate — the asymmetry is the point
 # --------------------------------------------------------------------------- #
 def test_stage1_block_failure_still_aborts(tmp_path, monkeypatch):

@@ -34,7 +34,8 @@ from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
                         skeletonize_block)
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import FAILED, group_counts, guarded, is_complete, write_failures
+from ._progress import (FAILED, FailureBreaker, group_counts, guarded, is_complete,
+                        write_failures)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ def skeletonize_segments(
     roi: Sequence[int] | str | None = None,
     db_path: str | None = None,
     fusion_stats_path: str | None = None,
+    max_consecutive_failures: int = 10,
     stages: Sequence[str] = ("skel-chunk", "skel-fuse"),
     client: Any | None = None,
     npartitions: int | None = None,
@@ -111,6 +113,11 @@ def skeletonize_segments(
     ticks) and what it inferred (join edges) — the numbers to look at when
     choosing ``postprocess_dust_nm`` / ``postprocess_tick_nm``. Pass
     ``fusion_stats_path`` to also dump the per-body rows as JSONL.
+
+    Stage-2 failures are isolated per body (stage 1 is not — see
+    ``ops/_progress.py``). ``max_consecutive_failures`` stops the stage when the
+    failures stop looking incidental; 0 disables it. A systemic error
+    (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
     from em_volume_tools.backends.base import open_backend
 
@@ -154,6 +161,8 @@ def skeletonize_segments(
     fused = 0
     fusion_stats: list[dict] = []       # per-body accounting of what fusion changed
     failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
+    failures_path = None
+    breaker = FailureBreaker(max_consecutive_failures)
     try:
         if "skel-chunk" in stages:
             # Stage 1 is deliberately NOT fault-isolated: see ops/_progress.py.
@@ -174,32 +183,39 @@ def skeletonize_segments(
                                            out_dir=out_dir, cfg=cfg))
 
             def on_result(batch):             # runs in the driver (sole DB/manifest writer)
+                # Record first, and apply the whole batch before letting the
+                # breaker abort — otherwise a trip mid-batch leaves bodies whose
+                # skeletons are on disk without their metrics in the DB.
+                manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
                 for body_id, status, metrics, info in batch:
                     if status == FAILED:
                         logger.warning("skel-fuse failed for body %s: %s",
                                        body_id, (info or {}).get("error"))
                         failures.append({"body_id": int(body_id), **(info or {})})
+                        breaker.failure(body_id, info)
                         continue
+                    breaker.success()
                     if db is not None and metrics:
                         db.update_body(body_id, **metrics)
                     if info:
                         fusion_stats.append(info)
-                manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
+                breaker.check()               # raises StageAborted if a trigger fired
 
             block_map(todo, worker, client=client, npartitions=npartitions, on_result=on_result)
     finally:
+        # In `finally` so an abort (breaker, or a stage-1 crash) still leaves the
+        # diagnostics behind — they are most useful precisely when it aborts.
         manifest.close()
         if db is not None:
             db.close()
-
-    if fusion_stats_path and fusion_stats:
-        with open(fusion_stats_path, "w") as f:
-            for s in fusion_stats:
-                f.write(json.dumps(s) + "\n")
-    failures_path = write_failures(out.dst.rstrip("/") + "/failures.skel.jsonl", failures)
-    if failures:
-        logger.warning("skel-fuse: %d bodies failed and were skipped -> %s "
-                       "(re-run to retry them)", len(failures), failures_path)
+        if fusion_stats_path and fusion_stats:
+            with open(fusion_stats_path, "w") as f:
+                for s in fusion_stats:
+                    f.write(json.dumps(s) + "\n")
+        failures_path = write_failures(out.dst.rstrip("/") + "/failures.skel.jsonl", failures)
+        if failures:
+            logger.warning("skel-fuse: %d bodies failed and were skipped -> %s "
+                           "(re-run to retry them)", len(failures), failures_path)
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_fused": fused,

@@ -29,7 +29,8 @@ from ..occupancy import occupied_blocks
 from ..precomputed import write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import FAILED, group_counts, guarded, is_complete, write_failures
+from ._progress import (FAILED, FailureBreaker, group_counts, guarded, is_complete,
+                        write_failures)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ def meshify(
     occupancy_voxel_size: Sequence[float] | None = None,
     roi: Sequence[int] | str | None = None,
     db_path: str | None = None,
+    max_consecutive_failures: int = 10,
     stages: Sequence[str] = ("chunk", "assemble"),
     client: Any | None = None,
     npartitions: int | None = None,
@@ -96,6 +98,11 @@ def meshify(
     count, component count) are written to the metrics DB by the driver, which is
     its sole writer — the same arrangement skeletonization uses. Note the metrics
     then describe whatever was meshed: under an ROI, that is the truncated body.
+
+    Stage-2 failures are isolated per body (stage 1 is not — see
+    ``ops/_progress.py``). ``max_consecutive_failures`` stops the stage when the
+    failures stop looking incidental; 0 disables it. A systemic error
+    (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
     from em_volume_tools.backends.base import open_backend
 
@@ -138,6 +145,8 @@ def meshify(
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
     failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
+    failures_path = None
+    breaker = FailureBreaker(max_consecutive_failures)
     try:
         if "chunk" in stages:
             # Stage 1 is deliberately NOT fault-isolated: see ops/_progress.py.
@@ -162,27 +171,33 @@ def meshify(
                                            grid_origin_xyz=grid_origin_xyz))
 
             def on_result(batch):         # runs in the driver (sole DB/manifest writer)
+                # Record first, and apply the whole batch before letting the
+                # breaker abort — otherwise a trip mid-batch leaves bodies whose
+                # meshes are on disk without their metrics in the DB.
+                manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
                 for body_id, status, metrics, info in batch:
                     if status == FAILED:
                         logger.warning("assemble failed for body %s: %s",
                                        body_id, (info or {}).get("error"))
                         failures.append({"body_id": int(body_id), **(info or {})})
+                        breaker.failure(body_id, info)
                         continue
+                    breaker.success()
                     if db is not None and metrics:
                         db.update_body(body_id, **metrics)
-                manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
+                breaker.check()           # raises StageAborted if a trigger fired
 
             block_map(todo, worker, client=client, npartitions=npartitions,
                       on_result=on_result)
     finally:
+        # In `finally` so an abort still leaves the diagnostics behind.
         manifest.close()
         if db is not None:
             db.close()
-
-    failures_path = write_failures(out.dst.rstrip("/") + "/failures.mesh.jsonl", failures)
-    if failures:
-        logger.warning("assemble: %d bodies failed and were skipped -> %s "
-                       "(re-run to retry them)", len(failures), failures_path)
+        failures_path = write_failures(out.dst.rstrip("/") + "/failures.mesh.jsonl", failures)
+        if failures:
+            logger.warning("assemble: %d bodies failed and were skipped -> %s "
+                           "(re-run to retry them)", len(failures), failures_path)
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_assembled": assembled,

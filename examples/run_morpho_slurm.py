@@ -79,6 +79,9 @@ def _parse_args(argv=None):
     p.add_argument("--serial", action="store_true",
                    help="no dask at all — run in this process (smallest smoke test)")
     p.add_argument("--no-resume", action="store_true", help="start over, ignoring manifests")
+    p.add_argument("--max-consecutive-failures", type=int, default=10,
+                   help="stop a stage after this many per-body failures in a row "
+                        "(0 disables; systemic errors abort immediately regardless)")
     p.add_argument("--dry-run", action="store_true",
                    help="report the plan (scales, ROI, block counts) and exit")
     return p.parse_args(argv)
@@ -181,7 +184,8 @@ def main(argv=None) -> int:
             summaries["mesh"] = meshify(
                 scale_spec(args.src, mesh_s.index), out, mesh_cfg,
                 mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=roi_mesh,
-                db_path=db_path, client=client, resume=resume)
+                db_path=db_path, max_consecutive_failures=args.max_consecutive_failures,
+                client=client, resume=resume)
             log.info("mesh: %s  (%.1f min)", summaries["mesh"], (time.time() - t) / 60)
 
         if "skel" in stages:
@@ -190,6 +194,7 @@ def main(argv=None) -> int:
                 scale_spec(args.src, skel_s.index), out, skel_cfg,
                 allowlist=allow, roi=roi_skel, db_path=db_path,
                 fusion_stats_path=f"{dst}/fusion_stats.jsonl",
+                max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)
             log.info("skel: %s  (%.1f min)", summaries["skel"], (time.time() - t) / 60)
 

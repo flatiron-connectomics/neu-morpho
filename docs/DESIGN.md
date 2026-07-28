@@ -290,6 +290,32 @@ excludes `failed`, never on `is_done`.
 The driver logs failed body ids per stage and **exits non-zero**, so a scripted
 pipeline does not mistake a partial result for a clean one.
 
+### Knowing when to stop isolating
+
+Isolation is right for *one odd body* and wrong for *a broken environment* — 40k
+identical failures are not 40k data points, they are one. Two triggers stop a
+stage (`_progress.FailureBreaker`):
+
+- **Systemic exception → abort at once.** `MemoryError`, `ImportError`, and
+  `OSError` with `ENOSPC` / `EDQUOT` / `EROFS`. These recur for every remaining
+  task by construction. Other `OSError`s (a transient read) stay isolated.
+  `MemoryError` is the debatable one: at stage 2 a single enormous body really can
+  exhaust memory on its own. It is treated as systemic anyway, because a process
+  that just hit OOM is not worth trusting for the next 40,000 tasks — and if it
+  was one body, the run resumes past it once that body is excluded or re-scaled.
+- **`max_consecutive_failures` (default 10) → abort.** Catches the slow version of
+  the same thing, where each failure is individually plausible. One success resets
+  the streak. `0` disables it. Under dask, batches complete out of order, so
+  "consecutive" means consecutive in *completion* order — a proxy, not a precise
+  claim about the task list.
+
+`KeyboardInterrupt` and `SystemExit` derive from `BaseException` and are
+deliberately not caught, so Ctrl-C still stops a run immediately.
+
+The abort applies a batch's results in full before tripping, so it never leaves a
+body's mesh on disk without its metrics in the DB, and the failures file and
+manifest are written in a `finally` — the diagnostics matter most when it aborts.
+
 ## Open questions
 
 - **Multi-component bodies are now possible** (the seam-scale join default keeps
