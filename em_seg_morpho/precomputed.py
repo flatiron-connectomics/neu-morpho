@@ -41,6 +41,46 @@ IDENTITY_TRANSFORM = [1.0, 0.0, 0.0, 0.0,
                       0.0, 0.0, 1.0, 0.0]
 
 
+VALID_QUANTIZATION_BITS = (10, 16)      # neuroglancer multiresolution mesh spec
+
+
+def quantization_step_nm(cfg: MeshConfig, chunk_shape_xyz: Sequence[float]) -> float:
+    """Position resolution (nm) at the COARSEST LOD — the one that bites.
+
+    Draco spreads ``2**bits`` steps across each octree cell, and a LOD-l cell is
+    ``chunk * 2**l`` wide, so the step doubles per LOD.
+    """
+    coarsest_cell = max(chunk_shape_xyz) * (2 ** max(0, cfg.num_lods - 1))
+    return coarsest_cell / (2 ** cfg.draco_quantization_bits)
+
+
+def check_quantization(cfg: MeshConfig, chunk_shape_xyz: Sequence[float],
+                       voxel_size_zyx: Sequence[float], *, min_ratio: float = 4.0) -> None:
+    """Fail fast if Draco quantization would collapse triangles at a coarse LOD.
+
+    When the coarsest LOD's quantization step approaches the voxel size,
+    decimated triangles quantize to zero area and Draco rejects the *whole body*
+    with "All triangles are degenerate" — which on real data hit 29% of bodies at
+    10 bits, scale 2. Cheap to check up front; expensive to discover after an
+    hour of meshing.
+    """
+    if cfg.draco_quantization_bits not in VALID_QUANTIZATION_BITS:
+        raise ValueError(
+            f"draco_quantization_bits must be one of {VALID_QUANTIZATION_BITS} "
+            f"(neuroglancer spec), got {cfg.draco_quantization_bits}. Intermediate "
+            "values encode fine but neuroglancer will not read them.")
+
+    step = quantization_step_nm(cfg, chunk_shape_xyz)
+    finest = min(voxel_size_zyx)
+    if step * min_ratio > finest:
+        raise ValueError(
+            f"Draco quantization step at the coarsest LOD is {step:.3g} nm, too close to "
+            f"the {finest:.3g} nm voxel — triangles will collapse and bodies will fail to "
+            f"encode. Raise draco_quantization_bits (currently "
+            f"{cfg.draco_quantization_bits}; 16 is the max the spec allows), or reduce "
+            f"num_lods ({cfg.num_lods}) or block_shape ({tuple(cfg.block_shape)}).")
+
+
 def write_mesh_info(output_dir: str, cfg: MeshConfig, *, transform=None,
                     lod_scale_multiplier: float = 1.0) -> None:
     """Write the multi-resolution mesh ``info`` (once per output volume)."""

@@ -26,7 +26,7 @@ from ..config import MeshConfig, OutputConfig
 from ..coords import block_chunk_shape_xyz, physical_box
 from ..mesh import assemble_body, mesh_block, mesh_metrics
 from ..occupancy import occupied_blocks
-from ..precomputed import write_body_multires, write_mesh_info
+from ..precomputed import check_quantization, write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
 from ._progress import (FAILED, FailureBreaker, group_counts, guarded, is_complete,
@@ -131,11 +131,13 @@ def meshify(
     # dst outlives `rm -rf dst`, and the next run then skips every task as "done"
     # and reports success while writing nothing.
     progress = out.progress_path or (out.dst.rstrip("/") + "/progress.mesh.jsonl")
-    write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
-
     # multires octree base, in nm (model space = physical nm, grid origin at 0)
     chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
     grid_origin_xyz = [0.0, 0.0, 0.0]
+
+    # Before anything expensive: would Draco quantization collapse coarse LODs?
+    check_quantization(mesh_cfg, chunk_shape_xyz, mesh_voxel_size)
+    write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
 
     db = None
     if db_path is not None:

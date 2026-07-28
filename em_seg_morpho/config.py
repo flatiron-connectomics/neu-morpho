@@ -30,7 +30,16 @@ class MeshConfig:
     # Multi-resolution output.
     num_lods: int = 3
     lod_decimation_factor: float = 2.0       # face reduction per coarser LOD
-    draco_quantization_bits: int = 10        # must be 10 or 16
+    # Draco quantizes vertex positions into 2**bits steps ACROSS EACH OCTREE CELL,
+    # and a LOD-l cell is chunk * 2**l wide — so the effective step COARSENS by 2x
+    # per LOD. Once it approaches the voxel size, decimated triangles collapse to
+    # zero area and Draco rejects the fragment ("All triangles are degenerate"),
+    # failing the whole body. Measured on real data at scale 2 (32 nm voxels,
+    # 256-block => 8192 nm cells): 10 bits gives a 32 nm step at LOD 2 — exactly
+    # the voxel size — and 29% of bodies failed to encode. 16 bits gives 0.5 nm.
+    # The neuroglancer spec allows only 10 or 16, so 16 is the answer; see
+    # precomputed.check_quantization, which computes this before a run.
+    draco_quantization_bits: int = 16        # must be 10 or 16 (neuroglancer spec)
     sharded: bool = False
 
     min_segment_voxels: int = 0             # skip bodies smaller than this (if known)
