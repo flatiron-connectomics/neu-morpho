@@ -31,10 +31,21 @@ from .config import MeshConfig
 # Written for every body, and declared in the skeleton ``info``. The binary must
 # carry exactly these attributes, in this order, so we normalize every skeleton
 # to them rather than trusting whatever the producer happened to attach.
+#
+# float32 ONLY — see :func:`_check_vertex_attributes`. osteoid also attaches a
+# uint8 ``vertex_types`` (SWC type codes) by default; it is deliberately not
+# emitted, because neuroglancer refuses to render it and kimimaro leaves it all
+# zeros for us anyway (no soma detection).
 SKELETON_VERTEX_ATTRIBUTES = [
     {"id": "radius", "data_type": "float32", "num_components": 1},
-    {"id": "vertex_types", "data_type": "uint8", "num_components": 1},
 ]
+
+# The precomputed spec permits int8/uint8/int16/uint16/int32/uint32 here, but
+# neuroglancer uploads skeleton vertex attributes as WebGL vertex attributes and
+# its shader path only handles float32. A non-float32 attribute produces a
+# spec-legal file that the viewer rejects outright with
+# "Data type not supported by WebGL: UINT8", taking the whole layer with it.
+WEBGL_SKELETON_ATTRIBUTE_DTYPES = frozenset({"float32"})
 
 IDENTITY_TRANSFORM = [1.0, 0.0, 0.0, 0.0,
                       0.0, 1.0, 0.0, 0.0,
@@ -180,6 +191,24 @@ def link_subresources(volume_dir: str, *, mesh: str | None = None,
     return changed
 
 
+def _check_vertex_attributes(attrs: Sequence[dict]) -> None:
+    """Reject attribute dtypes neuroglancer cannot render.
+
+    The file would be perfectly spec-legal; the viewer just fails the whole layer
+    with "Data type not supported by WebGL: <TYPE>". Catching it at write time
+    beats discovering it in the browser.
+    """
+    bad = [a for a in attrs if a.get("data_type") not in WEBGL_SKELETON_ATTRIBUTE_DTYPES]
+    if bad:
+        names = ", ".join(f"{a.get('id')!r}={a.get('data_type')!r}" for a in bad)
+        raise ValueError(
+            f"skeleton vertex attributes must be float32 for neuroglancer to render "
+            f"them; got {names}. The precomputed spec allows integer types, but the "
+            f"viewer uploads these as WebGL vertex attributes and rejects the layer "
+            f'with "Data type not supported by WebGL". Cast the attribute to float32 '
+            f"or drop it.")
+
+
 def write_skeleton_info(output_dir: str, *, transform: Sequence[float] | None = None,
                         vertex_attributes: Sequence[dict] | None = None) -> None:
     """Write the ``neuroglancer_skeletons`` ``info`` (once per output volume).
@@ -187,10 +216,12 @@ def write_skeleton_info(output_dir: str, *, transform: Sequence[float] | None = 
     The transform is **identity**: vertices are already physical nm in the same
     model space as the meshes, so neuroglancer must not re-scale them.
     """
+    attrs = list(vertex_attributes or SKELETON_VERTEX_ATTRIBUTES)
+    _check_vertex_attributes(attrs)
     info = {
         "@type": "neuroglancer_skeletons",
         "transform": list(transform if transform is not None else IDENTITY_TRANSFORM),
-        "vertex_attributes": list(vertex_attributes or SKELETON_VERTEX_ATTRIBUTES),
+        "vertex_attributes": attrs,
     }
     os.makedirs(output_dir, exist_ok=True)
     with open(f"{output_dir}/info", "w") as f:
@@ -201,11 +232,13 @@ def encode_skeleton(skeleton) -> bytes:
     """Encode a global-nm **zyx** skeleton as precomputed **xyz** bytes.
 
     Normalizes the vertex attributes to :data:`SKELETON_VERTEX_ATTRIBUTES` so the
-    blob always matches the ``info``. Radii kimimaro did not supply are left as
-    its ``-1`` sentinel.
+    blob always matches the ``info`` — including *dropping* osteoid's default
+    uint8 ``vertex_types``, which the viewer cannot render. Radii kimimaro did not
+    supply are left as its ``-1`` sentinel.
     """
     from osteoid import Skeleton
 
+    _check_vertex_attributes(SKELETON_VERTEX_ATTRIBUTES)
     verts_zyx = np.asarray(skeleton.vertices, dtype=np.float32).reshape(-1, 3)
     verts_xyz = np.ascontiguousarray(verts_zyx[:, ::-1])          # <-- the flip
     out = Skeleton(vertices=verts_xyz,
@@ -215,9 +248,7 @@ def encode_skeleton(skeleton) -> bytes:
     radius = getattr(skeleton, "radius", None)
     if radius is not None and len(radius) == n:
         out.radius = np.asarray(radius, dtype=np.float32)
-    vtypes = getattr(skeleton, "vertex_types", None)
-    if vtypes is not None and len(vtypes) == n:
-        out.vertex_types = np.asarray(vtypes, dtype=np.uint8)
+    # exactly what info declares, in that order — to_precomputed walks this list
     out.extra_attributes = [dict(a) for a in SKELETON_VERTEX_ATTRIBUTES]
     return out.to_precomputed()
 

@@ -9,6 +9,7 @@ import json
 import os
 
 import numpy as np
+import pytest
 
 from em_seg_morpho.precomputed import (SKELETON_VERTEX_ATTRIBUTES, encode_skeleton,
                                        write_body_skeleton, write_skeleton_info)
@@ -41,15 +42,41 @@ def test_encode_flips_zyx_to_xyz():
     np.testing.assert_array_equal(back.edges, [[0, 1]])
 
 
-def test_encode_preserves_radius_and_declared_attributes():
+def test_encode_preserves_radius():
     s = _skel([[0.0, 0, 0], [1, 1, 1]], [[0, 1]], radius=[5.0, 7.0])
     from osteoid import Skeleton
     back = Skeleton.from_precomputed(encode_skeleton(s))
     np.testing.assert_array_equal(back.radius, [5.0, 7.0])
-    # the blob must carry exactly what info declares, whatever the producer attached
-    s.extra_attributes = [{"id": "radius", "data_type": "float32", "num_components": 1}]
-    assert len(encode_skeleton(s)) == len(encode_skeleton(_skel([[0.0, 0, 0], [1, 1, 1]],
-                                                                [[0, 1]], radius=[5.0, 7.0])))
+
+
+def test_declared_attributes_are_all_float32():
+    """Neuroglancer rejects the whole layer on a non-float32 vertex attribute.
+
+    The precomputed spec permits uint8 and friends, so this is a viewer
+    constraint the spec will not warn you about: it surfaces only in the browser,
+    as "Data type not supported by WebGL: UINT8".
+    """
+    assert [a["data_type"] for a in SKELETON_VERTEX_ATTRIBUTES] == ["float32"]
+
+
+def test_write_skeleton_info_rejects_non_float32_attributes(tmp_path):
+    from em_seg_morpho.precomputed import write_skeleton_info as w
+
+    with pytest.raises(ValueError, match="must be float32"):
+        w(str(tmp_path / "s"),
+          vertex_attributes=[{"id": "radius", "data_type": "float32", "num_components": 1},
+                             {"id": "vertex_types", "data_type": "uint8", "num_components": 1}])
+
+
+def test_encode_drops_osteoid_default_vertex_types():
+    """osteoid attaches a uint8 vertex_types by default; it must not reach the file.
+
+    Byte-exact: 2 uint32 header + 2 verts * 3 float32 + 1 edge * 2 uint32 +
+    2 radii * float32 = 8 + 24 + 8 + 8 = 48. A stray uint8 attribute adds 2.
+    """
+    s = _skel([[0.0, 0, 0], [1, 1, 1]], [[0, 1]], radius=[5.0, 7.0])
+    s.vertex_types = np.array([2, 3], np.uint8)          # producer attached one
+    assert len(encode_skeleton(s)) == 48
 
 
 def test_write_body_skeleton_roundtrip(tmp_path):

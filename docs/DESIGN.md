@@ -180,8 +180,19 @@ block is untouched.
 Written directly as `neuroglancer_skeletons` (`precomputed.write_skeleton_info` /
 `write_body_skeleton`) via osteoid's `Skeleton.to_precomputed` — osteoid is
 already a kimimaro dependency, so no CloudVolume (which we avoid for writing).
-`info` declares an identity transform and the `radius` + `vertex_types` vertex
-attributes; every blob is normalized to exactly those, so the two can't drift.
+`info` declares an identity transform and a single `radius` vertex attribute;
+every blob is normalized to exactly that, so the two can't drift.
+
+**Vertex attributes must be float32.** The precomputed spec permits
+`int8`/`uint8`/`int16`/`uint16`/`int32`/`uint32`, but neuroglancer uploads
+skeleton vertex attributes as WebGL vertex attributes and its shader path handles
+only float32 — anything else produces a spec-legal file that the viewer refuses
+with *"Data type not supported by WebGL: UINT8"*, failing the entire layer. This
+bit us: osteoid attaches a uint8 `vertex_types` (SWC type codes) by default, and
+declaring it made the whole source unloadable. It is now dropped rather than cast,
+since kimimaro leaves it all zeros for us anyway (no soma detection).
+`write_skeleton_info` and `encode_skeleton` both reject non-float32 attributes,
+because the failure is invisible until the browser.
 
 **The zyx→xyz flip is part of the alignment contract.** Model space is nm held
 *zyx* in memory (`Mesh.vertices_zyx`, kimimaro vertices), but both precomputed
