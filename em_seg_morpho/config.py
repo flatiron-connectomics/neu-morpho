@@ -81,8 +81,8 @@ class SkeletonConfig:
     # so a body whose entire skeleton is shorter than it is deleted outright
     # (kimimaro's 1500 nm default does this to genuinely small bodies) — the op
     # reports those as "dust" rather than silently dropping them.
-    postprocess_dust_nm: float = 1500.0       # drop disconnected components shorter than this
-    postprocess_tick_nm: float = 3000.0       # drop short spurious side branches
+    postprocess_dust_nm: float = 500.0       # drop disconnected components shorter than this
+    postprocess_tick_nm: float = 500.0       # drop short spurious side branches
 
     fragment_format: str = "skel"             # per-fragment on-disk extension
 
