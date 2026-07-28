@@ -181,7 +181,7 @@ def main(argv=None) -> int:
             summaries["mesh"] = meshify(
                 scale_spec(args.src, mesh_s.index), out, mesh_cfg,
                 mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=roi_mesh,
-                client=client, resume=resume)
+                db_path=db_path, client=client, resume=resume)
             log.info("mesh: %s  (%.1f min)", summaries["mesh"], (time.time() - t) / 60)
 
         if "skel" in stages:

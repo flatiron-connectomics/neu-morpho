@@ -200,10 +200,18 @@ the "need a body's bbox before we can crop it" dependency.
   merges into the DB (min/max bbox, summed counts) **atomically per block**
   (bbox+count and the block's done-marker commit together), so it's exact, covers
   all bodies, and resumes without double-counting. Bbox stored in full-res voxels.
-- **Enrichment**: `update_body(...)` sets a stage's columns (mesh area / verts /
-  components; cable length, branches, tips, max radius) — upserting, so a body the
-  index scan never saw still gets its metrics. `skel-fuse` writes its metrics from
-  the driver, which stays the DB's sole writer.
+- **Enrichment**: `update_body(...)` sets a stage's columns — upserting, so a body
+  the index scan never saw still gets its metrics. Both stage-2 workers return
+  metrics alongside their status and the **driver** writes them, staying the DB's
+  sole writer.
+  - `assemble` -> `mesh_area_nm2`, `mesh_verts`, `n_mesh_components`, measured on
+    the LOD-0 mesh before `write_body_multires` decimates it in place.
+    `n_mesh_components` doubles as QC: block fragments only merge once
+    `stitch_adjacent_faces` welds their coincident boundary vertices, so a
+    spanning body still reporting >1 means the stitch did not take (a genuinely
+    split body also reports >1 — the count alone cannot tell them apart).
+  - `skel-fuse` -> `cable_length_nm`, `n_branches`, `n_tips`, `max_radius_nm`.
+  - Under an `roi`, metrics describe the **truncated** body, not the whole one.
 - **Consumers**: `crop_at_scale(body_id, factor, margin)` gives the per-body crop
   path its crop; `bodies_by_size` / `write_allowlist` generate the meshing
   allowlist by size — closing the loop (index → size-filter → allowlist → mesh).
@@ -255,9 +263,11 @@ against a dask cluster from `em_blockrun.start_dask`, or in-process with
   lowered so small bodies are not deleted.
 - **Fixed-edge simplification** in stage 1 (preserve block boundaries) — vol2mesh
   `simplify` options TBD.
-- **Meshing DB enrichment** is still unwired: the `assemble` worker should return
-  mesh area / verts / components and the driver `update_body` them, the way
-  `skel-fuse` now does.
+- **Mesh surface area is measured on the decimated mesh.** `decimation_fraction`
+  defaults to 0.1 in stage 1, so `mesh_area_nm2` reflects the simplified geometry,
+  not the marching-cubes original. Fine as a relative size measure across bodies;
+  do not read it as an absolute membrane area without checking the bias against
+  `decimation_fraction=1.0` on a sample.
 - Fragment store on **object storage** (currently ceph filesystem).
 - Scale/voxel-size wiring: caller passes `seg_spec` at the meshing scale +
   `occupancy_spec` at a coarse scale, with voxel sizes — keeps the op

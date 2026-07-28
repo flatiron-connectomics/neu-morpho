@@ -23,7 +23,7 @@ from em_blockrun import Manifest, block_map, iter_blocks
 from ..allowlist import load_allowlist
 from ..config import MeshConfig, OutputConfig
 from ..coords import block_chunk_shape_xyz, physical_box
-from ..mesh import assemble_body, mesh_block
+from ..mesh import assemble_body, mesh_block, mesh_metrics
 from ..occupancy import occupied_blocks
 from ..precomputed import write_body_multires, write_mesh_info
 from .. import fragments as _frag
@@ -47,13 +47,19 @@ def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfi
 
 def _assemble_body(body_id: int, *, chunked_dir: str, out_dir: str, mesh_cfg: MeshConfig,
                    chunk_shape_xyz: Sequence[int], grid_origin_xyz: Sequence[int]) -> tuple:
+    """Returns ``(body_id, status, metrics)`` — the driver splits off the metrics.
+
+    Metrics are taken from the assembled LOD-0 mesh, before
+    ``write_body_multires`` decimates it in place for the coarser LODs.
+    """
     frags = _frag.read_body_fragments(chunked_dir, body_id, mesh_cfg.fragment_format)
     if not frags:
-        return (body_id, "empty")
+        return (body_id, "empty", None)
     mesh = assemble_body(frags, mesh_cfg)
+    metrics = mesh_metrics(mesh)
     n = write_body_multires(out_dir, body_id, mesh, mesh_cfg,
                             chunk_shape_xyz=chunk_shape_xyz, grid_origin_xyz=grid_origin_xyz)
-    return (body_id, "written" if n else "empty")
+    return (body_id, "written" if n else "empty", metrics if n else None)
 
 
 # --------------------------------------------------------------------------- #
@@ -69,6 +75,7 @@ def meshify(
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
     roi: Sequence[int] | str | None = None,
+    db_path: str | None = None,
     stages: Sequence[str] = ("chunk", "assemble"),
     client: Any | None = None,
     npartitions: int | None = None,
@@ -80,6 +87,11 @@ def meshify(
     restricts stage 1 to the blocks intersecting it, on the same global grid, so a
     trial run is a prefix of the full run (see roi.py). A body straddling the ROI
     edge is meshed only from the blocks inside it.
+
+    With ``db_path``, each assembled body's mesh metrics (surface area, vertex
+    count, component count) are written to the metrics DB by the driver, which is
+    its sole writer — the same arrangement skeletonization uses. Note the metrics
+    then describe whatever was meshed: under an ROI, that is the truncated body.
     """
     from em_volume_tools.backends.base import open_backend
 
@@ -104,16 +116,23 @@ def meshify(
 
     out_dir = out.dst.rstrip("/") + "/" + out.mesh_dir
     chunked_dir = out.chunked_dir or (out.dst.rstrip("/") + "/chunked")
-    progress = out.progress_path or (out.dst.rstrip("/") + ".progress.jsonl")
+    # INSIDE dst, like the fragments and the metrics DB. A manifest sitting beside
+    # dst outlives `rm -rf dst`, and the next run then skips every task as "done"
+    # and reports success while writing nothing.
+    progress = out.progress_path or (out.dst.rstrip("/") + "/progress.mesh.jsonl")
     write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
 
     # multires octree base, in nm (model space = physical nm, grid origin at 0)
     chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
     grid_origin_xyz = [0.0, 0.0, 0.0]
 
+    db = None
+    if db_path is not None:
+        from ..metrics_db import MetricsDB
+        db = MetricsDB(db_path)
+
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
-    counts_before = manifest.counts()
     try:
         if "chunk" in stages:
             todo = [b for b in blocks if not (resume and manifest.is_done("chunk", b.index))]
@@ -133,10 +152,20 @@ def meshify(
             worker = functools.partial(_assemble_body, chunked_dir=chunked_dir, out_dir=out_dir,
                                        mesh_cfg=mesh_cfg, chunk_shape_xyz=chunk_shape_xyz,
                                        grid_origin_xyz=grid_origin_xyz)
+
+            def on_result(batch):         # runs in the driver (sole DB/manifest writer)
+                if db is not None:
+                    for body_id, _status, metrics in batch:
+                        if metrics:
+                            db.update_body(body_id, **metrics)
+                manifest.record("assemble", [(b, s) for b, s, _ in batch])
+
             block_map(todo, worker, client=client, npartitions=npartitions,
-                      on_result=lambda r: manifest.record("assemble", r))
+                      on_result=on_result)
     finally:
         manifest.close()
+        if db is not None:
+            db.close()
 
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_assembled": assembled,

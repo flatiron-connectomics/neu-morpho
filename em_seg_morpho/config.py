@@ -105,5 +105,9 @@ class OutputConfig:
     skel_chunked_dir: str = ""               # stage-1 skeleton fragments; default dst+"/skel_chunked"
     mesh_dir: str = "mesh"                   # multires mesh subpath under dst
     skeleton_dir: str = "skeleton"
-    progress_path: str | None = None         # em-blockrun manifest (default derived from dst)
+    # em-blockrun manifest. Defaults to dst/progress.{mesh,skel}.jsonl — INSIDE
+    # dst deliberately, so deleting the output also clears the record of it. A
+    # manifest that outlives its outputs makes the next run skip everything as
+    # "already done" and report success having written nothing.
+    progress_path: str | None = None
     extra: dict = field(default_factory=dict)

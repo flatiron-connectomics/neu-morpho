@@ -126,6 +126,45 @@ def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
     assert os.path.exists(os.path.join(second["out_dir"], "9"))
 
 
+def test_manifests_live_inside_dst_so_deleting_output_really_resets(tmp_path):
+    """A manifest outliving its outputs makes the next run a silent no-op.
+
+    It skips every task as "already done" and reports success having written
+    nothing — which is exactly what happens if the manifest sits *beside* dst
+    rather than inside it.
+    """
+    import os
+    import shutil
+
+    from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
+    from em_seg_morpho.ops.meshify import meshify
+    from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
+    dst = str(tmp_path / "out")
+    out = OutputConfig(dst=dst)
+    mcfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2,
+                      decimation_fraction=1.0)
+    scfg = SkeletonConfig(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
+                          const=30.0, dust_threshold=0,
+                          postprocess_dust_nm=0.0, postprocess_tick_nm=0.0)
+
+    m1 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
+    s1 = skeletonize_segments(src, out, scfg, client=None)
+    for path in (m1["progress_path"], s1["progress_path"]):
+        assert os.path.commonpath([os.path.abspath(path), os.path.abspath(dst)]) == \
+            os.path.abspath(dst), f"{path} is not inside {dst}"
+    assert os.path.exists(os.path.join(m1["out_dir"], "7"))
+    assert os.path.exists(os.path.join(s1["out_dir"], "7"))
+
+    shutil.rmtree(dst)
+    m2 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
+    s2 = skeletonize_segments(src, out, scfg, client=None)
+    assert m2["num_bodies_assembled"] > 0 and s2["num_bodies_fused"] > 0
+    assert os.path.exists(os.path.join(m2["out_dir"], "7"))
+    assert os.path.exists(os.path.join(s2["out_dir"], "7"))
+
+
 def test_roi_restricts_index_scan(tmp_path):
     from em_seg_morpho.metrics_db import MetricsDB
     from em_seg_morpho.ops.index_segments import index_segments

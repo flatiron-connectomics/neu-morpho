@@ -57,3 +57,41 @@ def assemble_body(fragment_meshes: Sequence["object"], cfg: MeshConfig):
     mesh = concatenate_meshes(list(fragment_meshes))
     mesh.stitch_adjacent_faces()                          # weld shared block boundaries
     return mesh
+
+
+def surface_area_nm2(mesh) -> float:
+    """Total triangle area. Vertices are nm (coords.py), so this is nm²."""
+    tri = mesh.vertices_zyx[mesh.faces]
+    if len(tri) == 0:
+        return 0.0
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    return float(0.5 * np.linalg.norm(cross, axis=1).sum())
+
+
+def count_components(mesh) -> int:
+    """Connected components of the mesh, over shared **vertex indices**.
+
+    Worth watching as QC rather than just a descriptor: fragments from adjacent
+    blocks only merge once ``stitch_adjacent_faces`` welds their coincident
+    boundary vertices, so a spanning body that still reports >1 component is
+    telling you the stitch did not take. (A body genuinely split by the
+    segmentation also reports >1 — the count alone cannot separate the two.)
+    """
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    n = len(mesh.vertices_zyx)
+    faces = mesh.faces
+    if n == 0 or len(faces) == 0:
+        return 0
+    edges = np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    graph = sp.coo_matrix((np.ones(len(edges), np.int8), (edges[:, 0], edges[:, 1])),
+                          shape=(n, n))
+    return int(connected_components(graph, directed=False, return_labels=False))
+
+
+def mesh_metrics(mesh) -> dict:
+    """Per-body mesh metrics for the metrics DB (columns match metrics_db._EXTRA)."""
+    return {"mesh_area_nm2": surface_area_nm2(mesh),
+            "mesh_verts": int(len(mesh.vertices_zyx)),
+            "n_mesh_components": count_components(mesh)}

@@ -135,7 +135,9 @@ def skeletonize_segments(
 
     out_dir = out.dst.rstrip("/") + "/" + out.skeleton_dir
     chunked_dir = out.skel_chunked_dir or (out.dst.rstrip("/") + "/skel_chunked")
-    progress = out.progress_path or (out.dst.rstrip("/") + ".skel.progress.jsonl")
+    # INSIDE dst (see meshify): a manifest beside dst survives `rm -rf dst`, and
+    # the next run then skips everything as done and writes nothing.
+    progress = out.progress_path or (out.dst.rstrip("/") + "/progress.skel.jsonl")
     write_skeleton_info(out_dir)             # identity transform (vertices are nm)
 
     db = None
