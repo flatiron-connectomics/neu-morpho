@@ -20,6 +20,7 @@ they share one model space with the meshes and the ``info`` transform is identit
 from __future__ import annotations
 
 import functools
+import json
 from typing import Any, Sequence
 
 from em_blockrun import Manifest, block_map, iter_blocks
@@ -28,7 +29,8 @@ from ..allowlist import load_allowlist
 from ..config import OutputConfig, SkeletonConfig
 from ..occupancy import occupied_blocks
 from ..precomputed import write_body_skeleton, write_skeleton_info
-from ..skeleton import fuse_body, skeleton_metrics, skeletonize_block
+from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
+                        skeletonize_block)
 from .. import fragments as _frag
 
 
@@ -58,12 +60,13 @@ def _fuse_one_body(body_id: int, *, chunked_dir: str, out_dir: str,
     """
     frags = _frag.read_body_skel_fragments(chunked_dir, body_id, cfg.fragment_format)
     if not frags:
-        return (body_id, "empty", None)
-    skel = fuse_body(frags, cfg, body_id=body_id)
+        return (body_id, "empty", None, {})
+    stats: dict = {"body_id": int(body_id)}
+    skel = fuse_body(frags, cfg, body_id=body_id, stats=stats)
     if skel is None:
-        return (body_id, "dust", None)
+        return (body_id, "dust", None, stats)
     write_body_skeleton(out_dir, body_id, skel)
-    return (body_id, "written", skeleton_metrics(skel))
+    return (body_id, "written", skeleton_metrics(skel), stats)
 
 
 # --------------------------------------------------------------------------- #
@@ -78,6 +81,7 @@ def skeletonize_segments(
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
     db_path: str | None = None,
+    fusion_stats_path: str | None = None,
     stages: Sequence[str] = ("skel-chunk", "skel-fuse"),
     client: Any | None = None,
     npartitions: int | None = None,
@@ -89,6 +93,11 @@ def skeletonize_segments(
     ``cfg.anisotropy``. With ``db_path``, each fused body's metrics (cable length,
     branch/tip counts, max radius) are written to the metrics DB by the driver,
     which is its sole writer.
+
+    The returned ``fusion_stats`` totals what stage 2 threw away (dust components,
+    ticks) and what it inferred (join edges) — the numbers to look at when
+    choosing ``postprocess_dust_nm`` / ``postprocess_tick_nm``. Pass
+    ``fusion_stats_path`` to also dump the per-body rows as JSONL.
     """
     from em_volume_tools.backends.base import open_backend
 
@@ -125,6 +134,7 @@ def skeletonize_segments(
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
     fused = 0
+    fusion_stats: list[dict] = []       # per-body accounting of what fusion changed
     try:
         if "skel-chunk" in stages:
             todo = [b for b in blocks if not (resume and manifest.is_done("skel-chunk", b.index))]
@@ -143,11 +153,12 @@ def skeletonize_segments(
                                        out_dir=out_dir, cfg=cfg)
 
             def on_result(batch):             # runs in the driver (sole DB/manifest writer)
-                if db is not None:
-                    for body_id, _status, metrics in batch:
-                        if metrics:
-                            db.update_body(body_id, **metrics)
-                manifest.record("skel-fuse", [(b, s) for b, s, _ in batch])
+                for body_id, _status, metrics, stats in batch:
+                    if db is not None and metrics:
+                        db.update_body(body_id, **metrics)
+                    if stats:
+                        fusion_stats.append(stats)
+                manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
 
             block_map(todo, worker, client=client, npartitions=npartitions, on_result=on_result)
     finally:
@@ -155,10 +166,17 @@ def skeletonize_segments(
         if db is not None:
             db.close()
 
+    if fusion_stats_path and fusion_stats:
+        with open(fusion_stats_path, "w") as f:
+            for s in fusion_stats:
+                f.write(json.dumps(s) + "\n")
+
     return {"out_dir": out_dir, "chunked_dir": chunked_dir, "num_blocks": len(blocks),
             "num_bodies_fused": fused,
             "status_counts": _group_counts(manifest, "skel-fuse"),
             "chunk_counts": _group_counts(manifest, "skel-chunk"),
+            "fusion_stats": fusion_stats_summary(fusion_stats),
+            "fusion_stats_path": fusion_stats_path if fusion_stats else None,
             "progress_path": progress}
 
 

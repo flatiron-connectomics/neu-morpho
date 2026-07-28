@@ -102,8 +102,48 @@ def join_radius_nm(cfg: SkeletonConfig) -> float:
     return float(cfg.join_radius_nm)
 
 
-def fuse_body(fragments: Sequence[object], cfg: SkeletonConfig, body_id: int | None = None):
+def normalize_dtypes(skeleton):
+    """Force vertices to float32 and edges to uint32, in place.
+
+    kimimaro's compiled ``skeletontricks.create_distance_graph`` (reached from
+    ``remove_ticks``) declares ``float`` / ``uint32_t`` buffers and raises
+    ``ValueError: Buffer dtype mismatch`` on anything else. Both dtypes drift in
+    normal use: ``kimimaro.skeletonize`` hands back int64 edges under numpy 2,
+    arithmetic on vertices promotes them to float64, and — the one that actually
+    bites — ``kimimaro.post.remove_loops`` rebuilds edges as int64. Since
+    ``postprocess`` runs ``remove_loops`` before ``remove_ticks``, stock
+    postprocess raises for some arbors at any non-zero ``tick_threshold``, no
+    matter how clean its input was. Call this between the two.
+    """
+    if skeleton is None:
+        return skeleton
+    if skeleton.vertices.dtype != np.float32:
+        skeleton.vertices = skeleton.vertices.astype(np.float32)
+    if skeleton.edges.dtype != np.uint32:
+        skeleton.edges = skeleton.edges.astype(np.uint32)
+    radius = getattr(skeleton, "radius", None)
+    if radius is not None and radius.dtype != np.float32:
+        skeleton.radius = radius.astype(np.float32)
+    return skeleton
+
+
+def _profile(skeleton) -> dict:
+    """Cheap shape summary used to attribute what each fusion step changed."""
+    if skeleton is None or len(skeleton.vertices) == 0:
+        return {"comps": 0, "cable": 0.0, "verts": 0, "tips": 0, "branches": 0}
+    return {"comps": len(skeleton.components()), "cable": float(skeleton.cable_length()),
+            "verts": int(len(skeleton.vertices)), "tips": int(len(skeleton.terminals())),
+            "branches": int(len(skeleton.branches()))}
+
+
+def fuse_body(fragments: Sequence[object], cfg: SkeletonConfig, body_id: int | None = None,
+              stats: dict | None = None):
     """Weld a body's block fragments into one skeleton (or None if nothing survives).
+
+    This inlines ``kimimaro.postprocess``'s own sequence (dust -> loops ->
+    radius-restricted join -> ticks) rather than calling it, so every step's
+    effect can be measured and reported; ``tests/test_skeletonize_e2e.py`` pins
+    the result against ``kimimaro.postprocess`` so the two cannot drift.
 
     Two joins happen, and it matters that they are different:
 
@@ -114,33 +154,113 @@ def fuse_body(fragments: Sequence[object], cfg: SkeletonConfig, body_id: int | N
        adds a *straight edge between the nearest vertex pair* — with an unbounded
        radius it will happily bridge a genuine segmentation split with hundreds of
        nm of cable that no biology produced.
-    2. ``postprocess``, which drops dust components, breaks loops, runs its own
-       ``restrict_by_radius=True`` join (connects two pieces only where the gap is
-       smaller than the sum of their local radii — i.e. their cross-sections
-       nearly touch), then removes short ticks.
+    2. postprocess's own join, with ``restrict_by_radius=True``: connects two
+       pieces only where the gap is smaller than the sum of their local radii —
+       i.e. their cross-sections nearly touch.
 
     Components too far apart to join are **kept, disconnected**, not discarded —
-    the only thing that deletes a component is ``postprocess``'s dust threshold.
+    the only thing that deletes a component is the dust threshold.
+
+    Pass a dict as ``stats`` to receive per-step accounting (see
+    :func:`fusion_stats_summary` for what the fields mean).
     """
     import kimimaro
+    from kimimaro.post import remove_dust, remove_loops, remove_ticks
     from osteoid import Skeleton
 
+    rec = stats if stats is not None else {}
     frags = [f for f in fragments if f is not None and len(f.vertices)]
+    rec["n_fragments"] = len(frags)
     if not frags:
+        rec["deleted"] = False
         return None
 
+    merged = normalize_dtypes(Skeleton.simple_merge(frags).consolidate())
+    before = _profile(merged)
+    rec["comps_in"] = before["comps"]
+    rec["cable_in_nm"] = before["cable"]
+
+    # 1. seam join (bounded)
     radius = join_radius_nm(cfg)
-    if radius > 0:
-        skel = kimimaro.join_close_components(frags, radius=radius)
-    else:
-        skel = Skeleton.simple_merge(frags)     # postprocess's own join does the welding
-    skel = kimimaro.postprocess(skel, dust_threshold=cfg.postprocess_dust_nm,
-                                tick_threshold=cfg.postprocess_tick_nm)
-    if skel is None or len(skel.vertices) == 0:
+    skel = kimimaro.join_close_components(frags, radius=radius) if radius > 0 else merged
+    skel = normalize_dtypes(skel.consolidate())      # the join concatenates int64 edges
+    after_seam = _profile(skel)
+    rec["cable_joined_nm"] = after_seam["cable"]
+    rec["seam_join_comps_merged"] = before["comps"] - after_seam["comps"]
+    rec["seam_join_cable_added_nm"] = after_seam["cable"] - before["cable"]
+
+    # 2. dust — the ONLY step that deletes whole components
+    skel = remove_dust(skel, cfg.postprocess_dust_nm)
+    after_dust = _profile(skel)
+    rec["dust_comps_dropped"] = after_seam["comps"] - after_dust["comps"]
+    rec["dust_cable_dropped_nm"] = after_seam["cable"] - after_dust["cable"]
+
+    # 3. loops (collapsed / broken arbitrarily)
+    skel = remove_loops(skel)
+    after_loops = _profile(skel)
+    rec["loop_cable_delta_nm"] = after_loops["cable"] - after_dust["cable"]
+
+    # 4. radius-restricted join (always on, inside postprocess)
+    skel = normalize_dtypes(kimimaro.join_close_components(skel, restrict_by_radius=True))
+    after_rjoin = _profile(skel)
+    rec["radius_join_comps_merged"] = after_loops["comps"] - after_rjoin["comps"]
+    rec["radius_join_cable_added_nm"] = after_rjoin["cable"] - after_loops["cable"]
+
+    # 5. ticks — short side branches off the main arbor. normalize_dtypes above is
+    #    load-bearing: remove_ticks hits compiled code that rejects int64/float64.
+    skel = remove_ticks(skel, cfg.postprocess_tick_nm)
+    skel = normalize_dtypes(skel.consolidate())
+    out = _profile(skel)
+    rec["tick_branches_removed"] = max(0, after_rjoin["tips"] - out["tips"])
+    rec["tick_cable_removed_nm"] = after_rjoin["cable"] - out["cable"]
+
+    rec.update({"comps_out": out["comps"], "cable_out_nm": out["cable"],
+                "tips_out": out["tips"], "branches_out": out["branches"]})
+    rec["deleted"] = out["verts"] == 0
+
+    if out["verts"] == 0:
         return None
     # join_close_components rebuilds from components, so the segid does not survive.
     skel.id = int(body_id) if body_id is not None else getattr(frags[0], "id", None)
     return skel
+
+
+# Fields worth totalling across a run; the rest are per-body shape descriptors.
+_SUMMABLE = ["n_fragments", "comps_in", "cable_in_nm", "cable_joined_nm",
+             "seam_join_comps_merged", "seam_join_cable_added_nm",
+             "dust_comps_dropped", "dust_cable_dropped_nm",
+             "loop_cable_delta_nm", "radius_join_comps_merged", "radius_join_cable_added_nm",
+             "tick_branches_removed", "tick_cable_removed_nm", "comps_out", "cable_out_nm"]
+
+
+def fusion_stats_summary(per_body: Sequence[dict]) -> dict:
+    """Aggregate per-body fusion stats into run totals.
+
+    Answers "how much did postprocess actually throw away?":
+
+    - ``dust_comps_dropped`` / ``dust_cable_dropped_nm`` — components deleted for
+      being shorter than ``postprocess_dust_nm``.
+    - ``bodies_deleted`` — bodies that dust consumed *entirely*.
+    - ``tick_branches_removed`` / ``tick_cable_removed_nm`` — side branches pruned
+      by ``postprocess_tick_nm``.
+    - ``*_join_*`` — how much cable the two joins *added*, i.e. edges that are
+      inferred rather than measured.
+    - ``dropped_cable_fraction`` — dust + ticks as a share of the cable present
+      *after* joining (the cable those steps actually saw). The number to watch
+      when choosing thresholds.
+    """
+    out: dict = {"n_bodies": len(per_body)}
+    for field in _SUMMABLE:
+        out[field] = sum(s.get(field) or 0 for s in per_body)
+    out["bodies_deleted"] = sum(1 for s in per_body if s.get("deleted"))
+    out["bodies_multi_component"] = sum(1 for s in per_body if (s.get("comps_out") or 0) > 1)
+    dropped = out["dust_cable_dropped_nm"] + out["tick_cable_removed_nm"]
+    out["dropped_cable_nm"] = dropped
+    out["dropped_cable_fraction"] = (dropped / out["cable_joined_nm"]) if out["cable_joined_nm"] else 0.0
+    inferred = out["seam_join_cable_added_nm"] + out["radius_join_cable_added_nm"]
+    out["inferred_cable_nm"] = inferred
+    out["inferred_cable_fraction"] = (inferred / out["cable_joined_nm"]) if out["cable_joined_nm"] else 0.0
+    return out
 
 
 def skeleton_metrics(skeleton) -> dict:

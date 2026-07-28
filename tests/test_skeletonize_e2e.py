@@ -9,9 +9,11 @@ import os
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from em_seg_morpho.config import OutputConfig, SkeletonConfig
 from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
+from em_seg_morpho.skeleton import fuse_body, skeletonize_block
 
 
 def _write_seg_zarr(path, vol):
@@ -184,6 +186,158 @@ def test_join_radius_zero_defers_to_postprocess():
     # ...but it still refuses to bridge a genuine split
     split = list(skeletonize_block(_split_body(), (0, 0, 0), cfg).values())
     assert len(fuse_body(split, cfg, body_id=7).components()) == 2
+
+
+def _arbor_with_twigs():
+    """A trunk with short lateral twigs and a detached speck of the same label."""
+    vol = np.zeros((96, 48, 48), np.uint64)
+    vol[4:92, 22:26, 22:26] = 7                      # trunk
+    for z in (20, 40, 60, 80):                       # short twigs -> tick fodder
+        vol[z:z + 2, 26:34, 23:25] = 7
+    vol[50:52, 40:42, 40:42] = 7                     # detached speck -> dust fodder
+    return vol
+
+
+def _arbor_frags(cfg):
+    vol = _arbor_with_twigs()
+    return [skeletonize_block(vol[z0:z0 + 32], (z0, 0, 0), cfg)[7] for z0 in range(0, 96, 32)]
+
+
+def test_default_tick_threshold_runs():
+    """Regression: the shipped defaults must actually survive postprocess.
+
+    kimimaro's compiled remove_ticks rejects int64 edges / float64 vertices, and
+    both arise normally (skeletonize returns int64 edges; join_close_components
+    concatenates more). Every earlier test set tick=0, which short-circuits
+    remove_ticks entirely — so the shipped tick default was never executed.
+    """
+    # 32 nm voxels so the trunk clears the 1500 nm dust default
+    cfg = SkeletonConfig(anisotropy=(32.0, 32.0, 32.0), block_shape=(32, 32, 32),
+                         const=30.0, dust_threshold=0)
+    assert (cfg.postprocess_dust_nm, cfg.postprocess_tick_nm) == (1500.0, 3000.0)
+
+    fused = fuse_body(_arbor_frags(cfg), cfg, body_id=7)      # must not raise
+    assert fused is not None and len(fused.vertices) > 0
+    assert fused.edges.dtype == np.uint32 and fused.vertices.dtype == np.float32
+
+
+def test_remove_loops_breaks_the_edge_dtype():
+    """Why fuse_body inlines postprocess's steps instead of calling it.
+
+    postprocess is dust -> loops -> join -> ticks, and ``remove_loops`` rebuilds
+    edges as **int64**. ``remove_ticks`` reaches compiled code declaring a
+    ``uint32_t`` buffer, so it raises — not always (it depends on the arbor), but
+    often enough that the shipped tick default is unusable. Inlining lets
+    normalize_dtypes run between those two steps.
+
+    If this starts failing, kimimaro has fixed the dtype upstream and the
+    inlining could be reconsidered.
+    """
+    import kimimaro
+    from kimimaro.post import remove_dust, remove_loops
+
+    from em_seg_morpho.skeleton import join_radius_nm, normalize_dtypes
+
+    cfg = replace(_cfg(), postprocess_dust_nm=0.0, postprocess_tick_nm=1000.0)
+    frags = [skeletonize_block(_volume()[z0:z0 + 32], (z0, 0, 0), cfg)[7]
+             for z0 in range(0, 96, 32)]
+    clean = normalize_dtypes(
+        kimimaro.join_close_components(frags, radius=join_radius_nm(cfg)).consolidate())
+    assert clean.edges.dtype == np.uint32 and clean.vertices.dtype == np.float32
+
+    # the step that breaks it, in isolation
+    assert remove_loops(remove_dust(clean.clone(), 0.0)).edges.dtype == np.int64
+
+    # ...and the resulting failure through the stock entry point
+    with pytest.raises(ValueError, match="Buffer dtype mismatch"):
+        kimimaro.postprocess(clean.clone(), dust_threshold=0.0, tick_threshold=1000.0)
+
+    # our path handles the same input
+    fused = fuse_body(frags, cfg, body_id=7)
+    assert fused is not None and fused.edges.dtype == np.uint32
+
+
+def test_fuse_body_matches_kimimaro_postprocess():
+    """fuse_body inlines postprocess's steps to measure them — pin the equivalence.
+
+    Only comparable with tick=0, the one configuration stock postprocess survives
+    (see above); that still covers dust, loop removal and the radius join.
+    """
+    import kimimaro
+
+    from em_seg_morpho.skeleton import (fuse_body, join_radius_nm, normalize_dtypes,
+                                        skeletonize_block)
+
+    cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=0.0)
+    frags = _arbor_frags(cfg)
+
+    ours = fuse_body(frags, cfg, body_id=7)
+
+    joined = kimimaro.join_close_components(frags, radius=join_radius_nm(cfg))
+    theirs = kimimaro.postprocess(normalize_dtypes(joined.consolidate()),
+                                  dust_threshold=cfg.postprocess_dust_nm,
+                                  tick_threshold=cfg.postprocess_tick_nm)
+
+    assert len(ours.vertices) == len(theirs.vertices)
+    assert ours.cable_length() == pytest.approx(theirs.cable_length(), rel=1e-6)
+
+
+def test_tick_removal_prunes_twigs():
+    """The inlined tick path does what it should: fewer tips, less cable."""
+    cfg = replace(_cfg(), postprocess_dust_nm=0.0)
+    frags = _arbor_frags(cfg)
+
+    keep = fuse_body(frags, replace(cfg, postprocess_tick_nm=0.0), body_id=7)
+    prune = fuse_body(frags, replace(cfg, postprocess_tick_nm=1000.0), body_id=7)
+
+    assert len(prune.terminals()) < len(keep.terminals())
+    assert prune.cable_length() < keep.cable_length()
+
+
+def test_fusion_stats_attribute_what_was_dropped():
+    from em_seg_morpho.skeleton import fusion_stats_summary
+
+    cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=1000.0)
+    frags = _arbor_frags(cfg)
+
+    stats = {}
+    fuse_body(frags, cfg, body_id=7, stats=stats)
+
+    assert stats["n_fragments"] == 3
+    assert stats["seam_join_comps_merged"] >= 2          # 3 block fragments -> 1 trunk
+    assert stats["dust_comps_dropped"] >= 1              # the detached speck
+    assert stats["dust_cable_dropped_nm"] > 0
+    assert stats["tick_branches_removed"] >= 1           # the lateral twigs
+    assert stats["tick_cable_removed_nm"] > 0
+    assert not stats["deleted"]
+
+    summary = fusion_stats_summary([stats])
+    assert summary["n_bodies"] == 1 and summary["bodies_deleted"] == 0
+    assert 0 < summary["dropped_cable_fraction"] < 1
+    # nothing dropped when both thresholds are off
+    off = {}
+    fuse_body(frags, replace(cfg, postprocess_dust_nm=0.0, postprocess_tick_nm=0.0),
+              body_id=7, stats=off)
+    assert off["dust_comps_dropped"] == 0 and off["tick_cable_removed_nm"] == 0
+
+
+def test_op_reports_fusion_stats(tmp_path):
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _arbor_with_twigs())
+    out = OutputConfig(dst=str(tmp_path / "out"))
+    stats_path = str(tmp_path / "fusion.jsonl")
+
+    cfg = replace(_cfg(), block_shape=(32, 32, 32), postprocess_dust_nm=200.0,
+                  postprocess_tick_nm=1000.0)
+    summary = skeletonize_segments(src, out, cfg, fusion_stats_path=stats_path, client=None)
+
+    fs = summary["fusion_stats"]
+    assert fs["n_bodies"] == 1
+    assert fs["dust_comps_dropped"] >= 1 and fs["tick_branches_removed"] >= 1
+    assert fs["inferred_cable_fraction"] > 0        # the seam edges are inferred
+
+    import json
+    rows = [json.loads(ln) for ln in open(stats_path)]
+    assert len(rows) == 1 and rows[0]["body_id"] == 7
 
 
 def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):

@@ -126,6 +126,43 @@ one body's components, so a body whose *entire* skeleton is shorter than that
 vanishes. The op reports those as status **`dust`**, distinct from `empty` (no
 fragments at all), so the count is visible rather than silent.
 
+### Why fusion inlines postprocess instead of calling it
+
+`fuse_body` reproduces `postprocess`'s sequence (dust → loops → radius-restricted
+join → ticks) rather than calling it, for two reasons.
+
+1. **Measurement.** Each step is profiled, so the run reports what was thrown
+   away and what was inferred (below).
+2. **Tick removal does not otherwise work here.** kimimaro's compiled
+   `create_distance_graph`, reached from `remove_ticks`, declares `float` /
+   `uint32_t` buffers. `kimimaro.post.remove_loops` rebuilds edges as **int64**,
+   and `postprocess` runs it immediately before `remove_ticks` — so stock
+   `kimimaro.postprocess` raises `ValueError: Buffer dtype mismatch` for some
+   arbors at any non-zero `tick_threshold`, however clean its input was. (It is
+   arbor-dependent, not universal: a rod split across three blocks fails, the
+   twiggy test arbor happens to survive.) Inlining lets `normalize_dtypes` run
+   between those two steps. `tests/test_skeletonize_e2e.py` pins the upstream bug
+   and our equivalence to `postprocess` at `tick=0`; if the bug test starts
+   failing, kimimaro has fixed it upstream.
+
+### Measuring what was dropped
+
+`skeletonize_segments` returns a `fusion_stats` block (and, with
+`fusion_stats_path`, per-body JSONL): components and cable deleted by dust,
+branches and cable pruned by ticks, bodies deleted outright, bodies left
+multi-component, and how much cable each join *added* —
+`inferred_cable_fraction` is the share of the skeleton that is inferred across
+gaps rather than measured from the segmentation.
+
+`scripts/sweep_postprocess.py` sweeps both thresholds over real bodies (from a
+`skel-chunk` fragment dir, or straight from a volume + metrics DB) or synthetic
+ones, and prints that table — the row where `drop%` climbs steeply is where the
+threshold has started eating morphology rather than noise. On the synthetic set
+(bodies of only ~0.8–1.5 µm cable) dust=1000 already deletes 3 of 5 bodies and
+dust=1500 deletes 4 — a scale artifact of tiny test bodies, but the mechanism is
+real: the threshold is an absolute length, so it interacts with body size, and
+it must be chosen against the actual body-size distribution.
+
 **Why block-first**, given skeletons were originally planned per-body: the OOM
 hazard in the crop approach is the bounding-box **extent**, not the voxel count.
 A sparse arbor has few voxels but a huge bbox, and it is the dense crop array that
