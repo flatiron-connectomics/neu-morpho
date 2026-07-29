@@ -34,12 +34,15 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
+from datetime import datetime
 
 from em_blockrun import start_dask
 
 from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from em_seg_morpho.metrics_db import MetricsDB
+from em_seg_morpho.ops.export_roi_seg import scale_cost
 from em_seg_morpho.ops import (export_roi_seg, index_segments, meshify,
                                skeletonize_segments)
 from em_seg_morpho.precomputed import link_subresources
@@ -64,6 +67,10 @@ def _parse_args(argv=None):
                         "ROI's labels out as a precomputed volume for viewing")
     p.add_argument("--seg-encoding", default="compressed_segmentation",
                    help="encoding for the exported segmentation (or 'raw')")
+    p.add_argument("--seg-scales", default="all",
+                   help="source scales to copy in the seg stage: 'all', a range "
+                        "like '1-6', or a comma list. Scale 0 usually dominates "
+                        "the cost by an order of magnitude — check the log line")
     p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 in mesh/skeleton-scale voxels")
     p.add_argument("--roi-scale", type=int, default=None,
                    help="scale the --roi values are given in (default: --mesh-scale)")
@@ -162,6 +169,14 @@ def main(argv=None) -> int:
 
     roi_index, roi_mesh, roi_skel = roi_for(idx_s), roi_for(mesh_s), roi_for(skel_s)
 
+    seg_scales = None
+    if args.seg_scales and args.seg_scales != "all":
+        if "-" in args.seg_scales:
+            a, _, b = args.seg_scales.partition("-")
+            seg_scales = list(range(int(a), int(b) + 1))
+        else:
+            seg_scales = [int(x) for x in args.seg_scales.split(",")]
+
     occ_spec = occ_voxel = None
     if args.occupancy_scale is not None and args.occupancy_scale >= 0:
         if not 0 <= args.occupancy_scale < len(scales):
@@ -193,29 +208,40 @@ def main(argv=None) -> int:
              skel_s.index, skel_s.voxel_size, skel_s.shape,
              _blocks_in(skel_s.shape, block, roi_skel, skel_s.voxel_size, occ))
     log.info("stages=%s roi=%s occupancy=%s dst=%s", stages, roi_base,
-         f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
-         if occ else "off", dst)
+             f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
+             if occ else "off", dst)
     if args.dry_run:
         log.info("--dry-run: nothing executed")
         return 0
 
     os.makedirs(dst, exist_ok=True)
+    t_start = time.time()
     mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=block)
     skel_cfg = SkeletonConfig(skeleton_scale=skel_s.index, block_shape=block,
                               anisotropy=skel_s.voxel_size)
     resume = not args.no_resume
     summaries: dict[str, dict] = {}
+    timing: dict[str, float] = {}          # per-stage minutes, for run_summary
 
     def run_all(client):
         if "seg" in stages:
             t = time.time()
+            for c in scale_cost(args.src, roi_mesh, mesh_s.voxel_size,
+                                block_shape=block, scale_indices=seg_scales):
+                log.info("  seg scale %d (%3.0f nm): %-22s %6.2f Gvox  ~%6.2f GB raw",
+                         c["scale"], c["voxel_size"][0], str(c["shape"]),
+                         c["n_voxels"] / 1e9, c["raw_gb"])
             summaries["seg"] = export_roi_seg(
-                scale_spec(args.src, mesh_s.index), out.volume_dir(),
-                roi=roi_mesh, voxel_size=mesh_s.voxel_size, block_shape=block,
-                encoding=args.seg_encoding, client=client, resume=resume)
-            log.info("seg: region=%s %.1f Mvox -> %s  (%.1f min)",
-                     summaries["seg"]["region"], summaries["seg"]["n_voxels"] / 1e6,
-                     summaries["seg"]["out_dir"], (time.time() - t) / 60)
+                args.src, out.volume_dir(), roi=roi_mesh,
+                roi_voxel_size=mesh_s.voxel_size, scale_indices=seg_scales,
+                block_shape=block, encoding=args.seg_encoding,
+                progress_path=f"{dst}/progress.seg.jsonl",
+                client=client, resume=resume)
+            timing["seg"] = (time.time() - t) / 60
+            log.info("seg: %d scales, %.2f Gvox -> %s  (%.1f min)",
+                     len(summaries["seg"]["scales"]),
+                     summaries["seg"]["n_voxels_total"] / 1e9,
+                     summaries["seg"]["out_dir"], timing["seg"])
 
         if "index" in stages:
             if db_path is None:
@@ -228,7 +254,8 @@ def main(argv=None) -> int:
                 fullres_factor=idx_s.factor_from(finest),
                 block_shape=block, roi=roi_index,
                 client=client, resume=resume)
-            log.info("index: %s  (%.1f min)", summaries["index"], (time.time() - t) / 60)
+            timing["index"] = (time.time() - t) / 60
+            log.info("index: %s  (%.1f min)", summaries["index"], timing["index"])
 
         # size-filter the indexed bodies into an allowlist the later stages honour
         if db_path and args.allowlist is None and (args.min_voxels or args.limit_bodies):
@@ -245,9 +272,11 @@ def main(argv=None) -> int:
                 scale_spec(args.src, mesh_s.index), out, mesh_cfg,
                 mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=roi_mesh,
                 occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
-                occupancy_dilate=args.occupancy_dilate, db_path=db_path, max_consecutive_failures=args.max_consecutive_failures,
+                occupancy_dilate=args.occupancy_dilate, db_path=db_path,
+                max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)
-            log.info("mesh: %s  (%.1f min)", summaries["mesh"], (time.time() - t) / 60)
+            timing["mesh"] = (time.time() - t) / 60
+            log.info("mesh: %s  (%.1f min)", summaries["mesh"], timing["mesh"])
 
         if "skel" in stages:
             t = time.time()
@@ -259,7 +288,8 @@ def main(argv=None) -> int:
                 fusion_stats_path=f"{dst}/fusion_stats.jsonl",
                 max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)
-            log.info("skel: %s  (%.1f min)", summaries["skel"], (time.time() - t) / 60)
+            timing["skel"] = (time.time() - t) / 60
+            log.info("skel: %s  (%.1f min)", summaries["skel"], timing["skel"])
 
     if args.serial:
         log.info("serial mode: no dask client")
@@ -269,20 +299,17 @@ def main(argv=None) -> int:
         with start_dask(args.workers, config_path=args.config, label="em-seg-morpho") as client:
             run_all(client)
 
-    with open(f"{dst}/run_summary.json", "w") as f:
-        json.dump({k: {kk: vv for kk, vv in v.items()} for k, v in summaries.items()},
-                  f, indent=2, default=str)
-
     # Point the volume info at whichever subresources now exist, so one
-    # neuroglancer layer carries labels + meshes + skeletons. Done last because
-    # the seg stage rewrites info, which would drop the keys.
+    # neuroglancer layer carries labels + meshes + skeletons. After the stages
+    # because the seg stage rewrites info, which would drop the keys.
     vol = out.volume_dir()
+    linked: dict[str, str] = {}
     if os.path.exists(os.path.join(vol, "info")):
-        subs = {k: d for k, d in (("mesh", mesh_cfg and out.mesh_dir),
-                                  ("skeletons", out.skeleton_dir))
+        subs = {k: d for k, d in (("mesh", out.mesh_dir), ("skeletons", out.skeleton_dir))
                 if os.path.isdir(os.path.join(vol, d))}
         if subs:
-            log.info("volume info -> %s", link_subresources(vol, **subs))
+            linked = link_subresources(vol, **subs)
+            log.info("volume info -> %s", linked)
         log.info("neuroglancer source: precomputed://file://%s", vol)
     else:
         log.warning("no volume at %s — run --stages seg to export the labels, "
@@ -292,13 +319,29 @@ def main(argv=None) -> int:
     # non-zero — otherwise a scripted pipeline treats a partial result as clean.
     failed = {stage: s.get("failed_bodies") or [] for stage, s in summaries.items()}
     n_failed = sum(len(v) for v in failed.values())
-    if n_failed:
-        for stage, bodies in failed.items():
-            if bodies:
-                log.warning("%s: %d bodies FAILED and were skipped: %s%s", stage, len(bodies),
-                            bodies[:10], " ..." if len(bodies) > 10 else "")
-                log.warning("%s: tracebacks in %s; re-run to retry them",
-                            stage, summaries[stage].get("failures_path"))
+    for stage, bodies in failed.items():
+        if bodies:
+            log.warning("%s: %d bodies FAILED and were skipped: %s%s", stage, len(bodies),
+                        bodies[:10], " ..." if len(bodies) > 10 else "")
+            log.warning("%s: tracebacks in %s; re-run to retry them",
+                        stage, summaries[stage].get("failures_path"))
+
+    # Written last, so it describes the finished state including the linking.
+    wall = (time.time() - t_start) / 60
+    summary = {
+        "timing_min": {**{k: round(v, 2) for k, v in timing.items()},
+                       "total": round(wall, 2)},
+        "started": datetime.fromtimestamp(t_start).astimezone().isoformat(timespec="seconds"),
+        "finished": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "command": " ".join(sys.argv),
+        "volume": vol,
+        "linked_subresources": linked,
+        "n_failed_bodies": n_failed,
+        "stages": {k: dict(v) for k, v in summaries.items()},
+    }
+    with open(f"{dst}/run_summary.json", "w") as f:
+        json.dump(summary, f, indent=2, default=str)
+    log.info("timing (min): %s", summary["timing_min"])
     log.info("done -> %s", f"{dst}/run_summary.json")
     return 1 if n_failed else 0
 

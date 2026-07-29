@@ -46,9 +46,9 @@ def test_export_carries_the_voxel_offset(tmp_path):
     out = str(tmp_path / "segmentation")
 
     summary = export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128),
-                             voxel_size=(32.0, 32.0, 32.0), block_shape=(64, 64, 64),
-                             multiscale=False, encoding="raw", client=None)
-    assert summary["region"] == (64, 64, 64, 128, 128, 128)
+                             roi_voxel_size=(32.0, 32.0, 32.0), block_shape=(64, 64, 64),
+                             scale_indices=[0], encoding="raw", client=None)
+    assert summary["scales"][0]["shape"] == (64, 64, 64)
 
     info = json.load(open(os.path.join(out, "info")))
     assert info["@type"] == "neuroglancer_multiscale_volume"
@@ -69,8 +69,8 @@ def test_exported_labels_land_at_the_same_nm_as_the_source(tmp_path):
     vol[70:90, 70:90, 70:90] = 5
     src = _write_seg(str(tmp_path / "seg.zarr"), vol)
     out = str(tmp_path / "segmentation")
-    export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), voxel_size=(32.0, 32.0, 32.0),
-                   block_shape=(64, 64, 64), multiscale=False, encoding="raw", client=None)
+    export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), roi_voxel_size=(32.0, 32.0, 32.0),
+                   block_shape=(64, 64, 64), scale_indices=[0], encoding="raw", client=None)
 
     from em_volume_tools.backends.base import open_backend
     be = open_backend({"backend": "neuroglancer_precomputed", "path": out, "scale_index": 0})
@@ -92,8 +92,8 @@ def _volume_with_subresources(tmp_path):
     vol[70:90, 70:90, 70:90] = 5
     src = _write_seg(str(tmp_path / "seg.zarr"), vol)
     out = str(tmp_path / "segmentation")
-    export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), voxel_size=(32.0,) * 3,
-                   block_shape=(64, 64, 64), multiscale=False, encoding="raw", client=None)
+    export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), roi_voxel_size=(32.0,) * 3,
+                   block_shape=(64, 64, 64), scale_indices=[0], encoding="raw", client=None)
     write_mesh_info(os.path.join(out, "mesh"), MeshConfig())
 
     from osteoid import Skeleton
@@ -163,8 +163,85 @@ def test_align_can_be_turned_off(tmp_path):
     vol[70:90, 70:90, 70:90] = 5
     src = _write_seg(str(tmp_path / "seg.zarr"), vol)
     summary = export_roi_seg(src, str(tmp_path / "seg2"), roi=(70, 70, 70, 90, 90, 90),
-                             voxel_size=(32.0,) * 3, block_shape=(64, 64, 64),
-                             align_to_blocks=False, multiscale=False, encoding="raw",
+                             roi_voxel_size=(32.0,) * 3, block_shape=(64, 64, 64),
+                             align_to_blocks=False, scale_indices=[0], encoding="raw",
                              client=None)
-    assert summary["region"] == (70, 70, 70, 90, 90, 90)
-    assert summary["n_voxels"] == 20 ** 3
+    assert summary["scales"][0]["shape"] == (20, 20, 20)
+    assert summary["n_voxels_total"] == 20 ** 3
+
+
+def _write_pyramid(tmp_path, levels=3):
+    """A precomputed source with `levels` scales, 2x isotropic, distinct labels."""
+    import numpy as np
+    from em_volume_tools.backends.tensorstore import TensorStoreBackend
+    from em_volume_tools.profiles import precomputed_create_spec
+
+    path = str(tmp_path / "src.precomputed")
+    full = np.zeros((64, 64, 64), np.uint64)
+    full[16:48, 16:48, 16:48] = 5
+    full[8:12, 8:12, 8:12] = 9
+    for i in range(levels):
+        vol = full[:: 2 ** i, :: 2 ** i, :: 2 ** i]
+        be = TensorStoreBackend.create(
+            precomputed_create_spec("s3-neuroglancer", path, vol.shape, "uint64",
+                                    resolution_zyx=(8.0 * 2 ** i,) * 3, scale_index=i,
+                                    type_="segmentation", chunk=(16, 16, 16),
+                                    encoding="raw"),
+            delete_existing=(i == 0))
+        be.write_region(tuple(slice(0, s) for s in vol.shape), vol)
+    return path
+
+
+def test_export_copies_every_scale_with_scaled_offsets(tmp_path):
+    """All source levels are copied, and each carries its own correct offset.
+
+    The offsets must scale with resolution: get that wrong and coarse levels sit
+    at the wrong place, which looks like a rendering glitch when you zoom out.
+    """
+    from em_volume_tools.backends.base import open_backend
+
+    src = _write_pyramid(tmp_path, levels=3)
+    out = str(tmp_path / "segmentation")
+    summary = export_roi_seg(src, out, roi=(16, 16, 16, 48, 48, 48),
+                             roi_voxel_size=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
+                             encoding="raw", client=None)
+    assert [w["scale"] for w in summary["scales"]] == [0, 1, 2]
+
+    info = json.load(open(os.path.join(out, "info")))
+    assert len(info["scales"]) == 3
+    for i, sc in enumerate(info["scales"]):
+        assert sc["resolution"] == [8.0 * 2 ** i] * 3
+        assert sc["voxel_offset"] == [16 // 2 ** i] * 3          # offset scales with res
+        assert sc["size"] == [32 // 2 ** i] * 3
+        # and the labels match the source level, read through the offset
+        dst = open_backend({"backend": "neuroglancer_precomputed", "path": out,
+                            "scale_index": i})
+        got = dst.read_region(tuple(slice(0, x) for x in dst.shape))
+        s_be = open_backend({"backend": "neuroglancer_precomputed", "path": src,
+                             "scale_index": i})
+        o = 16 // 2 ** i
+        exp = s_be.read_region(tuple(slice(o, o + n) for n in got.shape))
+        np.testing.assert_array_equal(got, exp)
+
+
+def test_scale_indices_restricts_the_export(tmp_path):
+    """A whole-volume run must be able to skip scale 0, which dominates the cost."""
+    src = _write_pyramid(tmp_path, levels=3)
+    out = str(tmp_path / "segmentation")
+    summary = export_roi_seg(src, out, roi=(16, 16, 16, 48, 48, 48),
+                             roi_voxel_size=(8.0,) * 3, block_shape=(16, 16, 16),
+                             scale_indices=[1, 2], encoding="raw", client=None)
+    assert [w["scale"] for w in summary["scales"]] == [1, 2]
+    info = json.load(open(os.path.join(out, "info")))
+    assert [s["resolution"][0] for s in info["scales"]] == [16.0, 32.0]
+
+
+def test_scale_cost_reports_the_expensive_level(tmp_path):
+    from em_seg_morpho.ops.export_roi_seg import scale_cost
+
+    src = _write_pyramid(tmp_path, levels=3)
+    cost = scale_cost(src, (16, 16, 16, 48, 48, 48), (8.0,) * 3, block_shape=(16, 16, 16))
+    assert [c["scale"] for c in cost] == [0, 1, 2]
+    assert cost[0]["n_voxels"] == 32 ** 3
+    # each coarser level is 8x cheaper, so level 0 dominates
+    assert cost[0]["n_voxels"] == 8 * cost[1]["n_voxels"] == 64 * cost[2]["n_voxels"]
