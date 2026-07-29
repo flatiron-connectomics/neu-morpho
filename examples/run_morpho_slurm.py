@@ -78,6 +78,16 @@ def _parse_args(argv=None):
     p.add_argument("--limit-bodies", type=int, default=None,
                    help="cap the allowlist to the N largest bodies")
     p.add_argument("--allowlist", help="explicit body-id file (overrides --min-voxels)")
+    p.add_argument("--no-metrics-db", action="store_true",
+                   help="skip the per-body metrics DB (its enrichment is observational; "
+                        "with an explicit --allowlist the index stage is unnecessary too)")
+
+    p.add_argument("--occupancy-scale", type=int, default=5,
+                   help="coarse scale used to skip empty blocks; -1 disables")
+    p.add_argument("--occupancy-dilate", type=int, default=1,
+                   help="grow the occupied set by N blocks. Keep >=1: a coarse scale "
+                        "misses sparse blocks and the miss does not converge, so an "
+                        "un-dilated filter silently skips real data")
 
     p.add_argument("--config", default="configs/dask-local.yaml")
     p.add_argument("--workers", type=int, default=4)
@@ -92,12 +102,27 @@ def _parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def _blocks_in(shape, block, roi):
-    """How many blocks a stage will actually process — the honest size estimate."""
+def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
+    """How many blocks a stage will actually process — the honest size estimate.
+
+    Applies BOTH filters. Reporting the ROI count alone overstates the work by
+    the occupancy factor (2.2x on this dataset), which makes --dry-run useless
+    for deciding whether a run is affordable.
+    """
     from em_blockrun import iter_blocks
 
+    from em_seg_morpho.occupancy import occupied_blocks
     from em_seg_morpho.roi import clip_to_shape, filter_blocks
-    return len(filter_blocks(iter_blocks(shape, block), clip_to_shape(roi, shape)))
+
+    blocks = filter_blocks(iter_blocks(shape, block), clip_to_shape(roi, shape))
+    if occ is None:
+        return len(blocks)
+    arr, occ_voxel, dilate = occ
+    grid = tuple(-(-shape[a] // block[a]) for a in range(3))
+    keep = occupied_blocks(arr, occ_voxel_size=occ_voxel, mesh_voxel_size=voxel_size,
+                           block_shape=block, grid_shape=grid, allowlist=None,
+                           dilate=dilate)
+    return sum(1 for b in blocks if b.index in keep)
 
 
 def main(argv=None) -> int:
@@ -137,22 +162,39 @@ def main(argv=None) -> int:
 
     roi_index, roi_mesh, roi_skel = roi_for(idx_s), roi_for(mesh_s), roi_for(skel_s)
 
+    occ_spec = occ_voxel = None
+    if args.occupancy_scale is not None and args.occupancy_scale >= 0:
+        if not 0 <= args.occupancy_scale < len(scales):
+            raise SystemExit(f"--occupancy-scale {args.occupancy_scale} out of range")
+        occ = scales[args.occupancy_scale]
+        occ_spec = scale_spec(args.src, occ.index)
+        occ_voxel = occ.voxel_size
+
     dst = args.dst.rstrip("/")
-    db_path = f"{dst}/metrics.db"
+    db_path = None if args.no_metrics_db else f"{dst}/metrics.db"
     allowlist_path = args.allowlist or f"{dst}/allowlist.csv"
     out = OutputConfig(dst=dst)
+
+    occ = None
+    if occ_spec is not None:
+        from em_volume_tools.backends.base import open_backend
+        _be = open_backend(occ_spec)
+        occ = (_be.read_region(tuple(slice(0, x) for x in _be.shape)),
+               occ_voxel, args.occupancy_dilate)
 
     log.info("source pyramid:\n%s", describe(args.src))
     log.info("index  scale %d  voxel %s nm  shape %s  -> %d blocks",
              idx_s.index, idx_s.voxel_size, idx_s.shape,
-             _blocks_in(idx_s.shape, block, roi_index))
+             _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ))
     log.info("mesh   scale %d  voxel %s nm  shape %s  -> %d blocks",
              mesh_s.index, mesh_s.voxel_size, mesh_s.shape,
-             _blocks_in(mesh_s.shape, block, roi_mesh))
+             _blocks_in(mesh_s.shape, block, roi_mesh, mesh_s.voxel_size, occ))
     log.info("skel   scale %d  voxel %s nm  shape %s  -> %d blocks",
              skel_s.index, skel_s.voxel_size, skel_s.shape,
-             _blocks_in(skel_s.shape, block, roi_skel))
-    log.info("stages=%s roi=%s dst=%s", stages, roi_base, dst)
+             _blocks_in(skel_s.shape, block, roi_skel, skel_s.voxel_size, occ))
+    log.info("stages=%s roi=%s occupancy=%s dst=%s", stages, roi_base,
+         f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
+         if occ else "off", dst)
     if args.dry_run:
         log.info("--dry-run: nothing executed")
         return 0
@@ -176,6 +218,9 @@ def main(argv=None) -> int:
                      summaries["seg"]["out_dir"], (time.time() - t) / 60)
 
         if "index" in stages:
+            if db_path is None:
+                raise SystemExit("--no-metrics-db is incompatible with the index "
+                                 "stage, whose only output is that DB")
             t = time.time()
             summaries["index"] = index_segments(
                 scale_spec(args.src, idx_s.index), db_path,
@@ -186,7 +231,7 @@ def main(argv=None) -> int:
             log.info("index: %s  (%.1f min)", summaries["index"], (time.time() - t) / 60)
 
         # size-filter the indexed bodies into an allowlist the later stages honour
-        if args.allowlist is None and (args.min_voxels or args.limit_bodies):
+        if db_path and args.allowlist is None and (args.min_voxels or args.limit_bodies):
             db = MetricsDB(db_path)
             n = db.write_allowlist(allowlist_path, min_voxels=args.min_voxels,
                                    limit=args.limit_bodies)
@@ -199,7 +244,8 @@ def main(argv=None) -> int:
             summaries["mesh"] = meshify(
                 scale_spec(args.src, mesh_s.index), out, mesh_cfg,
                 mesh_voxel_size=mesh_s.voxel_size, allowlist=allow, roi=roi_mesh,
-                db_path=db_path, max_consecutive_failures=args.max_consecutive_failures,
+                occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
+                occupancy_dilate=args.occupancy_dilate, db_path=db_path, max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)
             log.info("mesh: %s  (%.1f min)", summaries["mesh"], (time.time() - t) / 60)
 
@@ -207,7 +253,9 @@ def main(argv=None) -> int:
             t = time.time()
             summaries["skel"] = skeletonize_segments(
                 scale_spec(args.src, skel_s.index), out, skel_cfg,
-                allowlist=allow, roi=roi_skel, db_path=db_path,
+                allowlist=allow, roi=roi_skel,
+                occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
+                occupancy_dilate=args.occupancy_dilate, db_path=db_path,
                 fusion_stats_path=f"{dst}/fusion_stats.jsonl",
                 max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)

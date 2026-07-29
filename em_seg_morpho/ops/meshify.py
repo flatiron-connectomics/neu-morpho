@@ -79,6 +79,7 @@ def meshify(
     allowlist: Any = None,
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
+    occupancy_dilate: int = 1,
     roi: Sequence[int] | str | None = None,
     db_path: str | None = None,
     max_consecutive_failures: int = 10,
@@ -122,7 +123,7 @@ def meshify(
         occupied = occupied_blocks(occ_arr, occ_voxel_size=occupancy_voxel_size,
                                    mesh_voxel_size=mesh_voxel_size,
                                    block_shape=mesh_cfg.block_shape, grid_shape=grid_shape,
-                                   allowlist=allow)
+                                   allowlist=None, dilate=occupancy_dilate)
         blocks = [b for b in blocks if b.index in occupied]
 
     out_dir = out.volume_dir() + "/" + out.mesh_dir.strip("/")   # inside the volume
@@ -173,10 +174,7 @@ def meshify(
                                            grid_origin_xyz=grid_origin_xyz))
 
             def on_result(batch):         # runs in the driver (sole DB/manifest writer)
-                # Record first, and apply the whole batch before letting the
-                # breaker abort — otherwise a trip mid-batch leaves bodies whose
-                # meshes are on disk without their metrics in the DB.
-                manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
+                rows = []
                 for body_id, status, metrics, info in batch:
                     if status == FAILED:
                         logger.warning("assemble failed for body %s: %s",
@@ -185,8 +183,14 @@ def meshify(
                         breaker.failure(body_id, info)
                         continue
                     breaker.success()
-                    if db is not None and metrics:
-                        db.update_body(body_id, **metrics)
+                    if metrics:
+                        rows.append((body_id, metrics))
+                # One transaction per batch, not per body (see metrics_db).
+                if db is not None and rows:
+                    db.update_bodies(rows)
+                # Manifest last: it marks the body finished, so it must follow the
+                # metrics being durable. Still before the breaker can abort.
+                manifest.record("assemble", [(b, s) for b, s, _, _ in batch])
                 breaker.check()           # raises StageAborted if a trigger fired
 
             block_map(todo, worker, client=client, npartitions=npartitions,

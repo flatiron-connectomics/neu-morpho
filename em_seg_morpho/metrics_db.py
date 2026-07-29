@@ -14,7 +14,7 @@ writer (block-map workers only compute per-block partials).
 from __future__ import annotations
 
 import sqlite3
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 
 _BBOX = ["z0", "y0", "x0", "z1", "y1", "x1"]
 # enrichment columns other stages may set
@@ -121,6 +121,10 @@ class MetricsDB:
         """
         if not cols:
             return
+        self._upsert(body_id, cols)
+        self.con.commit()
+
+    def _upsert(self, body_id: int, cols: Mapping) -> None:
         names = ", ".join(cols)
         placeholders = ", ".join("?" for _ in cols)
         assignments = ", ".join(f"{k}=excluded.{k}" for k in cols)
@@ -128,7 +132,24 @@ class MetricsDB:
             f"INSERT INTO bodies (body_id, {names}) VALUES (?, {placeholders}) "
             f"ON CONFLICT(body_id) DO UPDATE SET {assignments}",
             (int(body_id), *cols.values()))
-        self.con.commit()
+
+    def update_bodies(self, rows: Iterable[tuple[int, Mapping]]) -> int:
+        """Upsert many bodies in **one transaction with one commit**.
+
+        ``update_body`` commits per call, which is fine interactively and ruinous
+        in a pipeline: the driver is the sole DB writer and runs single-threaded,
+        so one fsync per body turns into a serial section that grows with the body
+        count while every worker sits idle. Batching a result set into one commit
+        removes essentially all of that.
+        """
+        n = 0
+        for body_id, cols in rows:
+            if cols:
+                self._upsert(body_id, cols)
+                n += 1
+        if n:
+            self.con.commit()
+        return n
 
     def to_csv(self, path: str) -> None:
         import csv

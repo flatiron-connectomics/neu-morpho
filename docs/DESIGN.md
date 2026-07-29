@@ -211,10 +211,19 @@ the "need a body's bbox before we can crop it" dependency.
   merges into the DB (min/max bbox, summed counts) **atomically per block**
   (bbox+count and the block's done-marker commit together), so it's exact, covers
   all bodies, and resumes without double-counting. Bbox stored in full-res voxels.
+- **The DB is optional.** With an explicit allowlist the index stage has no other
+  purpose, and the enrichment columns are observational — `--no-metrics-db` skips
+  both. Worth doing on large production runs; `fusion_stats.jsonl` still records
+  what fusion dropped, and costs nothing (accumulated in memory, written once).
 - **Enrichment**: `update_body(...)` sets a stage's columns — upserting, so a body
   the index scan never saw still gets its metrics. Both stage-2 workers return
   metrics alongside their status and the **driver** writes them, staying the DB's
-  sole writer.
+  sole writer. It writes them with `update_bodies`, **one transaction per result
+  batch**: `update_body` commits per call, and since the driver is single-threaded
+  and the sole writer, per-body fsyncs become a serial section that grows with the
+  body count while every worker sits idle. Order within a batch is
+  outputs → DB commit → manifest, so a body is only marked done once its metrics
+  are durable.
   - `assemble` -> `mesh_area_nm2`, `mesh_verts`, `n_mesh_components`, measured on
     the LOD-0 mesh before `write_body_multires` decimates it in place.
     `n_mesh_components` doubles as QC: block fragments only merge once
@@ -302,6 +311,37 @@ directory's `@type`, because pointing a volume at the wrong subdirectory fails
 `info` and would otherwise drop the keys.
 
 [spec]: https://github.com/google/neuroglancer/blob/master/src/datasource/precomputed/volume.md
+
+## Skipping empty space (`occupancy.py`)
+
+Most of a volume is background. A coarse scale is read whole (scale 5 here is
+42 Mvox, 0.1 s) and reduced to a boolean over the *meshing* block grid; blocks
+with no labels are never read at the meshing scale. Measured on sample3 at
+scale 2 with 256³ blocks (1,386 blocks total):
+
+| occupancy source | blocks kept | misses vs scale 4 |
+|---|---|---|
+| scale 6 | 354 (25.5%) | 14 |
+| scale 5 | 360 (26.0%) | 8 |
+| scale 4 | 368 (26.6%) | — (reference) |
+| **scale 5, dilate 1** | **618 (44.6%)** | **0** |
+
+**Dilate by at least one block.** The counts above are strictly nested and do
+*not* converge — each finer scale finds more, because downsampling erases sparse
+tissue. So an un-dilated coarse filter silently skips blocks that hold data, and
+nothing downstream can tell. The asymmetry decides it: a false positive costs one
+read that finds no labels and returns; a false negative costs a body, invisibly.
+44% instead of 26% is cheap insurance, and dilation also covers the stragglers
+that only appear at scale 3 or finer, since tissue is contiguous.
+
+**Do not pass the allowlist to the occupancy filter** (the ops pass `None`
+explicitly). `occupied_blocks` supports it, but at a coarse scale many small
+allowlisted bodies have been downsampled away, so their blocks look empty and
+exactly the bodies you asked for get skipped. Use the plain `!= 0` test and let
+the allowlist filter *inside* each block, which stage 1 already does.
+
+`--dry-run` applies both the ROI and occupancy filters, so the block count it
+reports is the number that will actually be processed.
 
 ## Fault policy — asymmetric by design (`ops/_progress.py`)
 

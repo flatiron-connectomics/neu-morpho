@@ -45,3 +45,35 @@ def test_enrichment_update(tmp_path):
     db.update_body(7, cable_length_nm=1234.5, n_branches=3)
     r = db.con.execute("SELECT cable_length_nm, n_branches FROM bodies WHERE body_id=7").fetchone()
     assert r == (1234.5, 3)
+
+
+def test_update_bodies_batches_into_one_commit(tmp_path):
+    """Per-body commits made the driver a serial fsync bottleneck; batch them."""
+    from em_seg_morpho.metrics_db import MetricsDB
+
+    db = MetricsDB(str(tmp_path / "m.db"))
+    n = db.update_bodies([(7, {"cable_length_nm": 1.0, "n_tips": 2}),
+                          (8, {"cable_length_nm": 3.0}),
+                          (9, {})])                      # empty cols skipped
+    assert n == 2
+    rows = dict(db.con.execute("SELECT body_id, cable_length_nm FROM bodies"))
+    assert rows == {7: 1.0, 8: 3.0}
+    db.close()
+
+    # durable after close, i.e. it really committed
+    db2 = MetricsDB(str(tmp_path / "m.db"))
+    assert db2.con.execute(
+        "SELECT n_tips FROM bodies WHERE body_id=7").fetchone()[0] == 2
+    db2.close()
+
+
+def test_update_bodies_upserts_over_existing_rows(tmp_path):
+    from em_seg_morpho.metrics_db import MetricsDB
+
+    db = MetricsDB(str(tmp_path / "m.db"))
+    db.apply_index_block("0_0_0", {7: (0, 0, 0, 10, 10, 10, 500)}, 1.0)
+    db.update_bodies([(7, {"cable_length_nm": 9.0})])
+    row = db.con.execute(
+        "SELECT voxel_count, cable_length_nm FROM bodies WHERE body_id=7").fetchone()
+    assert row == (500, 9.0)               # index data preserved, metrics added
+    db.close()

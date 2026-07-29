@@ -87,6 +87,7 @@ def skeletonize_segments(
     allowlist: Any = None,
     occupancy_spec: dict | None = None,
     occupancy_voxel_size: Sequence[float] | None = None,
+    occupancy_dilate: int = 1,
     roi: Sequence[int] | str | None = None,
     db_path: str | None = None,
     fusion_stats_path: str | None = None,
@@ -141,7 +142,7 @@ def skeletonize_segments(
         occupied = occupied_blocks(occ_arr, occ_voxel_size=occupancy_voxel_size,
                                    mesh_voxel_size=cfg.anisotropy,
                                    block_shape=cfg.block_shape, grid_shape=grid_shape,
-                                   allowlist=allow)
+                                   allowlist=None, dilate=occupancy_dilate)
         blocks = [b for b in blocks if b.index in occupied]
 
     out_dir = out.volume_dir() + "/" + out.skeleton_dir.strip("/")   # inside the volume
@@ -183,10 +184,7 @@ def skeletonize_segments(
                                            out_dir=out_dir, cfg=cfg))
 
             def on_result(batch):             # runs in the driver (sole DB/manifest writer)
-                # Record first, and apply the whole batch before letting the
-                # breaker abort — otherwise a trip mid-batch leaves bodies whose
-                # skeletons are on disk without their metrics in the DB.
-                manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
+                rows = []
                 for body_id, status, metrics, info in batch:
                     if status == FAILED:
                         logger.warning("skel-fuse failed for body %s: %s",
@@ -195,10 +193,18 @@ def skeletonize_segments(
                         breaker.failure(body_id, info)
                         continue
                     breaker.success()
-                    if db is not None and metrics:
-                        db.update_body(body_id, **metrics)
+                    if metrics:
+                        rows.append((body_id, metrics))
                     if info:
                         fusion_stats.append(info)
+                # One transaction for the whole batch: per-body commits made the
+                # driver a serial fsync bottleneck while workers idled.
+                if db is not None and rows:
+                    db.update_bodies(rows)
+                # Mark done only AFTER the metrics are durable — the manifest is
+                # the "this body is finished" record, so it goes last. And record
+                # before the breaker can abort, or the batch's work is forgotten.
+                manifest.record("skel-fuse", [(b, s) for b, s, _, _ in batch])
                 breaker.check()               # raises StageAborted if a trigger fired
 
             block_map(todo, worker, client=client, npartitions=npartitions, on_result=on_result)
