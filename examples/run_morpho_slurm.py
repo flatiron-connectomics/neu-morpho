@@ -129,6 +129,9 @@ def _parse_args(argv=None):
                         "(0 disables; systemic errors abort immediately regardless)")
     p.add_argument("--dry-run", action="store_true",
                    help="report the plan (scales, ROI, block counts) and exit")
+    p.add_argument("--store-logs", action="store_true",
+                   help="keep TensorStore's benign S3 credential-chain logging "
+                        "(suppressed by default; real errors are never suppressed)")
     return p.parse_args(argv)
 
 
@@ -166,6 +169,16 @@ def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args(argv)
+    from em_volume_tools.logs import quiet_store_logs
+
+    # TensorStore's S3 stack logs its credential-provider chain at ERROR severity
+    # on success; on a real run that buried the actual output. Real failures
+    # (PERMISSION_DENIED and friends) are never suppressed — see logs.NEVER_DROP.
+    with quiet_store_logs(not args.store_logs):
+        return _main(args)
+
+
+def _main(args) -> int:
 
     scales = read_scales(args.src)
     if args.describe:
