@@ -39,7 +39,7 @@ def test_meshify_end_to_end(tmp_path):
 
     src = str(tmp_path / "seg.zarr")
     _write_seg_zarr(src, vol)
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     cfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2, decimation_fraction=1.0)
 
     summary = meshify({"backend": "zarr3", "path": src}, out, cfg,
@@ -73,7 +73,7 @@ def test_mesh_metrics_land_in_db(tmp_path):
 
     src = str(tmp_path / "seg.zarr")
     _write_seg_zarr(src, vol)
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
     cfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2, decimation_fraction=1.0)
 

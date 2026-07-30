@@ -72,7 +72,7 @@ def test_meshify_checks_before_doing_any_work(tmp_path):
         delete_existing=True)
     be.write_region(tuple(slice(0, s) for s in vol.shape), vol)
 
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     # chunk = 16 * 32 = 512 nm; 7 LODs -> coarsest cell 32768 nm; 10 bits -> 32 nm
     # step, equal to the voxel size — the real-data failure, in miniature.
     cfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=7,

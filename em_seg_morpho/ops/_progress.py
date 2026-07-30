@@ -40,6 +40,44 @@ class StageAborted(RuntimeError):
     """Stage stopped early by the failure breaker (not a per-task failure)."""
 
 
+class StaleManifest(RuntimeError):
+    """A manifest records completed work whose output is no longer there."""
+
+
+def check_manifest_matches_output(manifest: Any, out_dir: str, *, stage: str,
+                                  progress_path: str, resume: bool) -> None:
+    """Refuse to resume a manifest that has outlived the data it describes.
+
+    Bookkeeping lives in the POSIX work dir while the data may sit in an object
+    store, so the two no longer share a fate. Clear the destination and the
+    manifest still says every task is done: the run would skip all of them, write
+    nothing, and exit reporting success. Nothing raises, and the loss only shows
+    up as an empty layer in the viewer.
+
+    The probe is the stage's *own* ``info`` — the file this op writes on every
+    run — not the segmentation ``info``, so meshing into a volume whose labels
+    were never exported (a legitimate ``--stages mesh`` run) is not mistaken for
+    a cleared destination.
+
+    Only checked when resuming; ``resume=False`` is an explicit fresh start.
+    """
+    if not resume:
+        return
+    recorded = sum(manifest.counts().values())
+    if not recorded:
+        return                                   # nothing to be stale about
+    from ..precomputed import volume_exists
+
+    if volume_exists(out_dir):
+        return
+    raise StaleManifest(
+        f"{progress_path} records {recorded} completed {stage} task(s), but there is "
+        f"no 'info' at {out_dir} — the destination looks like it was cleared while "
+        f"the manifest survived. Resuming would skip every task and report success "
+        f"having written nothing. Re-run with --no-resume to start over (or delete "
+        f"the manifest), or point --dst back at the intended destination.")
+
+
 def is_systemic(exc: BaseException) -> bool:
     """Would this error recur for every remaining task?
 

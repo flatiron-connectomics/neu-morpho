@@ -7,15 +7,15 @@ cable removed, the bodies deleted entirely, and how much of the joined cable was
 *inferred* rather than measured.
 
     # real data (bodies come from the metrics DB built by index_segments):
-    pixi run -e dev python scripts/sweep_postprocess.py \
+    python scripts/sweep_postprocess.py \
         --volume /mnt/ceph/.../seg --backend neuroglancer_precomputed --scale 2 \
         --voxel 32,32,32 --db metrics.db --limit 50
 
     # already-chunked fragments from a skel-chunk run (no re-skeletonization):
-    pixi run -e dev python scripts/sweep_postprocess.py --chunked out/skel_chunked
+    python scripts/sweep_postprocess.py --chunked out/skel_chunked
 
     # synthetic arbors, no data needed:
-    pixi run -e dev python scripts/sweep_postprocess.py --synthetic
+    python scripts/sweep_postprocess.py --synthetic
 
 ``--dust`` / ``--tick`` take comma-separated nm values. The row where
 ``drop%`` starts climbing steeply is where the threshold has begun eating real

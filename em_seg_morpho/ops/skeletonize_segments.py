@@ -34,8 +34,8 @@ from ..skeleton import (fuse_body, fusion_stats_summary, skeleton_metrics,
                         skeletonize_block)
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import (FAILED, FailureBreaker, group_counts, guarded, is_complete,
-                        write_failures)
+from ._progress import (FAILED, FailureBreaker, check_manifest_matches_output,
+                        group_counts, guarded, is_complete, write_failures)
 
 logger = logging.getLogger(__name__)
 
@@ -145,20 +145,26 @@ def skeletonize_segments(
                                    allowlist=None, dilate=occupancy_dilate)
         blocks = [b for b in blocks if b.index in occupied]
 
-    out_dir = out.volume_dir() + "/" + out.skeleton_dir.strip("/")   # inside the volume
-    chunked_dir = out.skel_chunked_dir or (out.dst.rstrip("/") + "/skel_chunked")
-    # INSIDE dst (see meshify): a manifest beside dst survives `rm -rf dst`, and
-    # the next run then skips everything as done and writes nothing.
-    progress = out.progress_path or (out.dst.rstrip("/") + "/progress.skel.jsonl")
+    out.check_work_dir_is_local()
+    out_dir = out.skeleton_out()             # inside the volume; may be s3://
+    # Fragments and manifest in the POSIX work dir (see meshify) — they no longer
+    # share dst's fate, so the driver's resume guard covers the stale case.
+    chunked_dir = out.skel_chunked_dir or out.work("skel_chunked")
+    progress = out.progress_path or out.work("progress.skel.jsonl")
+
+    manifest = Manifest(progress)
+    manifest.load() if resume else manifest.reset()
+    # Must precede write_skeleton_info, which would recreate the very 'info' the
+    # check probes for and so mask a destination that was cleared.
+    check_manifest_matches_output(manifest, out_dir, stage="skel",
+                                  progress_path=progress, resume=resume)
+
     write_skeleton_info(out_dir)             # identity transform (vertices are nm)
 
     db = None
     if db_path is not None:
         from ..metrics_db import MetricsDB
         db = MetricsDB(db_path)
-
-    manifest = Manifest(progress)
-    manifest.load() if resume else manifest.reset()
     fused = 0
     fusion_stats: list[dict] = []       # per-body accounting of what fusion changed
     failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
@@ -218,7 +224,7 @@ def skeletonize_segments(
             with open(fusion_stats_path, "w") as f:
                 for s in fusion_stats:
                     f.write(json.dumps(s) + "\n")
-        failures_path = write_failures(out.dst.rstrip("/") + "/failures.skel.jsonl", failures)
+        failures_path = write_failures(out.work("failures.skel.jsonl"), failures)
         if failures:
             logger.warning("skel-fuse: %d bodies failed and were skipped -> %s "
                            "(re-run to retry them)", len(failures), failures_path)

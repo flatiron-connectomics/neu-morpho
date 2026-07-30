@@ -16,9 +16,22 @@ Large segments — whose binary mask over a big bounding box would OOM (the fail
 mode this package is designed around) — are meshed **chunked and stitched**
 rather than materialized whole.
 
+## Environment
+
+One conda environment covers this repo and the two below it, each installed
+editable. `em-blockrun` and `em-volume-tools` must be **sibling directories**.
+
 ```bash
-pixi install && pixi run -e dev test
+conda activate em-lib
+pip install --no-deps -e ../em-blockrun -e ../em-volume-tools -e .
+python -m pytest -q
 ```
+
+Python is pinned to **3.12**: `vol2mesh` and `dvidutils` are only built for py312
+on flyem-forge, and they are conda-only (no PyPI equivalent), so the conda
+environment — not pip — has to provide them. The combined spec lives one level
+up, at `em-libraries/environment.yml`. Skeleton *comparison* tooling
+(`skelcompare.py`) needs the `compare` extra: `networkx`, `plotly`, `skeletor`.
 
 ## Running it
 
@@ -31,11 +44,13 @@ so re-running the same command resumes.
 python examples/run_morpho_slurm.py --src /mnt/ceph/.../seg --describe
 
 # 1. one small cube, in-process — the fastest way to see it work end to end
-python examples/run_morpho_slurm.py --src ... --dst /mnt/ceph/.../morpho \
+python examples/run_morpho_slurm.py --src ... \
+    --dst /mnt/ceph/.../morpho/segmentation --work-dir /mnt/ceph/.../morpho \
     --serial --roi 0,0,0,512,2048,2048 --stages index,mesh,skel
 
-# 2. the same cube on SLURM, surviving logout
-nohup python -u examples/run_morpho_slurm.py --src ... --dst ... \
+# 2. the same cube on SLURM, surviving logout, publishing to s3
+nohup python -u examples/run_morpho_slurm.py --src ... \
+    --dst s3://bucket/sample3/segmentation --work-dir /mnt/ceph/.../morpho \
     --config configs/dask-slurm-any.yaml --workers 48 \
     --roi 0,0,0,512,2048,2048 --stages index,mesh,skel > run.log 2>&1 &
 squeue -u "$USER"
@@ -43,19 +58,38 @@ squeue -u "$USER"
 # 3. widen or drop --roi for the whole volume; step 2's work is reused
 ```
 
-The `seg` stage copies the ROI's labels out as a precomputed volume and the
-meshes and skeletons are written **inside** it, so a single neuroglancer layer
-carries all three:
+### Two destinations: `--dst` and `--work-dir`
+
+**`--dst` is the published volume** — the precomputed labels with meshes and
+skeletons written *inside* it, so a single neuroglancer layer carries all three.
+It may be a local path or an `s3://` URL.
 
 ```
 precomputed://file:///mnt/ceph/.../morpho/segmentation
+precomputed://s3://bucket/sample3/segmentation
 ```
 
 That volume's `info` gets `"mesh": "mesh"` and `"skeletons": "skeleton"` (the
 precomputed spec's subdirectory-naming keys), and the copy carries `voxel_offset`
-so it lands at its true global position rather than at the origin. Everything
-else the run produces — `metrics.db`, manifests, failure logs, stage-1 fragments
-— stays in `--dst` outside the volume, so the volume is servable as-is.
+so it lands at its true global position rather than at the origin.
+
+**`--work-dir` is everything else** — `metrics.db`, manifests, failure logs and
+the stage-1 fragment stores. It must be an ordinary filesystem path: it holds a
+sqlite DB, appended JSONL and a fragment store read back with file I/O, none of
+which work over an object store. It defaults to the parent of a local `--dst`,
+and is required when `--dst` is remote.
+
+> **`--dst` changed meaning.** It used to be the run root, with the volume at
+> `<dst>/segmentation`. It is now the volume itself. An existing invocation
+> passing `--dst /mnt/ceph/.../morpho` will publish to `.../morpho` directly
+> rather than `.../morpho/segmentation`. Add `/segmentation` to keep the old
+> layout — the work dir then defaults to the old run root.
+
+Because bookkeeping no longer lives inside the output, a manifest can outlive the
+data it describes: clear `--dst` and a resumed run would skip every task and
+report success having written nothing. Each stage refuses to resume when its
+manifest records completed work but its output `info` is gone, naming
+`--no-resume` as the explicit override.
 
 `--dry-run` reports the plan (scales, voxel sizes, block counts per stage)
 without touching anything — worth running before any large job.

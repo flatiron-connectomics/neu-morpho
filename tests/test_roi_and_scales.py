@@ -105,7 +105,7 @@ def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
     from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     cfg = SkeletonConfig(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
                          const=30.0, dust_threshold=0,
                          postprocess_dust_nm=0.0, postprocess_tick_nm=0.0)
@@ -126,23 +126,29 @@ def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
     assert os.path.exists(os.path.join(second["out_dir"], "9"))
 
 
-def test_manifests_live_inside_dst_so_deleting_output_really_resets(tmp_path):
-    """A manifest outliving its outputs makes the next run a silent no-op.
+def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_path):
+    """A manifest outliving its outputs would make the next run a silent no-op.
 
-    It skips every task as "already done" and reports success having written
-    nothing — which is exactly what happens if the manifest sits *beside* dst
-    rather than inside it.
+    dst may be an object store, so bookkeeping cannot live inside it and the two
+    no longer share a fate: clearing dst leaves the manifest claiming everything
+    is done. Resuming would then skip every task and report success having
+    written nothing. The ops refuse instead — see
+    ``ops/_progress.check_manifest_matches_output``.
     """
     import os
     import shutil
 
+    import pytest
+
     from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
+    from em_seg_morpho.ops._progress import StaleManifest
     from em_seg_morpho.ops.meshify import meshify
     from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
-    dst = str(tmp_path / "out")
-    out = OutputConfig(dst=dst)
+    work = str(tmp_path / "out")
+    dst = str(tmp_path / "out" / "segmentation")
+    out = OutputConfig(dst=dst, work_dir=work)
     mcfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2,
                       decimation_fraction=1.0)
     scfg = SkeletonConfig(anisotropy=(8.0, 8.0, 8.0), block_shape=(16, 16, 16),
@@ -151,18 +157,52 @@ def test_manifests_live_inside_dst_so_deleting_output_really_resets(tmp_path):
 
     m1 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
     s1 = skeletonize_segments(src, out, scfg, client=None)
+    # Manifests live in the POSIX work dir, NOT in dst — dst may be an object
+    # store, and it is the served volume, which bookkeeping must stay out of.
     for path in (m1["progress_path"], s1["progress_path"]):
-        assert os.path.commonpath([os.path.abspath(path), os.path.abspath(dst)]) == \
-            os.path.abspath(dst), f"{path} is not inside {dst}"
+        assert os.path.commonpath([os.path.abspath(path), os.path.abspath(work)]) == \
+            os.path.abspath(work), f"{path} is not inside {work}"
+        assert not os.path.abspath(path).startswith(os.path.abspath(dst) + os.sep), \
+            f"{path} is inside the served volume {dst}"
     assert os.path.exists(os.path.join(m1["out_dir"], "7"))
     assert os.path.exists(os.path.join(s1["out_dir"], "7"))
 
+    # The data is cleared but the manifest in work_dir survives.
     shutil.rmtree(dst)
-    m2 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)
-    s2 = skeletonize_segments(src, out, scfg, client=None)
+    for op in (lambda: meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None),
+               lambda: skeletonize_segments(src, out, scfg, client=None)):
+        with pytest.raises(StaleManifest, match="no 'info' at"):
+            op()
+
+    # resume=False is an explicit fresh start, so it proceeds and rewrites.
+    m2 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None, resume=False)
+    s2 = skeletonize_segments(src, out, scfg, client=None, resume=False)
     assert m2["num_bodies_assembled"] > 0 and s2["num_bodies_fused"] > 0
     assert os.path.exists(os.path.join(m2["out_dir"], "7"))
     assert os.path.exists(os.path.join(s2["out_dir"], "7"))
+
+
+def test_guard_allows_a_first_run_and_an_ordinary_resume(tmp_path):
+    """The guard must be silent in both normal cases, or it is useless.
+
+    An empty manifest has nothing to be stale about, and a resume whose output is
+    still present is the common walltime-recovery path.
+    """
+    import os
+
+    from em_seg_morpho.config import MeshConfig, OutputConfig
+    from em_seg_morpho.ops.meshify import meshify
+
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
+                       work_dir=str(tmp_path / "out"))
+    mcfg = MeshConfig(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2,
+                      decimation_fraction=1.0)
+
+    m1 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)  # first run
+    assert m1["num_bodies_assembled"] > 0
+    m2 = meshify(src, out, mcfg, mesh_voxel_size=(8, 8, 8), client=None)  # resume
+    assert os.path.exists(os.path.join(m2["out_dir"], "7"))
 
 
 def test_roi_restricts_index_scan(tmp_path):

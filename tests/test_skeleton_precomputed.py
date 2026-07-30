@@ -125,3 +125,64 @@ def test_mesh_and_skeleton_agree_after_encoding():
         (m_lo_xyz, m_hi_xyz, sv.min(0), sv.max(0))
     # x is the narrow axis (~240..272 nm) and z the long one (~32..160): a flip bug swaps them
     assert sv[:, 0].min() > 200 and sv[:, 2].max() < 200
+
+
+# --------------------------------------------------------------------------- #
+# Destination-agnostic writes: precomputed.py must never touch the filesystem
+# directly, or an s3:// destination silently writes nowhere.
+# --------------------------------------------------------------------------- #
+def test_precomputed_module_uses_no_direct_file_io():
+    """A single stray open()/os.makedirs here breaks remote destinations.
+
+    vol2mesh separates encoding from writing (build_info / encode_multilod_object
+    return a dict and bytes), which is what lets every write go through the
+    kvstore. Calling multires.write_info or write_object_mesh instead would write
+    to the local filesystem behind our back — and pass every local test.
+    """
+    import ast
+    import inspect
+
+    from em_seg_morpho import precomputed
+
+    tree = ast.parse(inspect.getsource(precomputed))
+
+    # `os` has no business here at all — its absence is the invariant.
+    imported = {alias.name.split(".")[0]
+                for node in ast.walk(tree) if isinstance(node, ast.Import)
+                for alias in node.names}
+    imported |= {node.module.split(".")[0] for node in ast.walk(tree)
+                 if isinstance(node, ast.ImportFrom) and node.module}
+    assert "os" not in imported, "precomputed.py imports os; writes must go through the kvstore"
+
+    banned_calls = {("multires", "write_info"), ("multires", "write_object_mesh")}
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if isinstance(fn, ast.Name) and fn.id == "open":
+            found.append("open()")
+        elif (isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name)
+                and (fn.value.id, fn.attr) in banned_calls):
+            found.append(f"{fn.value.id}.{fn.attr}()")
+    assert not found, f"{found} in precomputed.py writes to the filesystem, breaking s3"
+
+
+def test_skeleton_and_mesh_info_land_via_kvstore(tmp_path):
+    """The kvstore path produces exactly the same on-disk layout as before."""
+    from em_volume_tools import read_json
+
+    from em_seg_morpho.config import MeshConfig
+    from em_seg_morpho.precomputed import (volume_exists, write_mesh_info,
+                                           write_skeleton_info)
+
+    mesh_dir, skel_dir = str(tmp_path / "vol" / "mesh"), str(tmp_path / "vol" / "skeleton")
+    assert not volume_exists(mesh_dir)                 # nothing written yet
+
+    write_mesh_info(mesh_dir, MeshConfig())
+    write_skeleton_info(skel_dir)
+    assert volume_exists(mesh_dir) and volume_exists(skel_dir)
+    assert read_json(mesh_dir, "info")["@type"] == "neuroglancer_multilod_draco"
+    assert read_json(skel_dir, "info")["@type"] == "neuroglancer_skeletons"
+    # identity transform: vertices are already physical nm
+    assert read_json(skel_dir, "info")["transform"] == [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]

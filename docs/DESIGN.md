@@ -283,20 +283,56 @@ per the [precomputed spec][spec]: a segmentation volume's `info` may carry `mesh
 and `skeletons` keys, each *naming a subdirectory of the volume root*. With those
 set, one neuroglancer layer shows labels + meshes + skeletons together.
 
+**Data and bookkeeping are separate destinations.** `--dst` is the volume and may
+be an object store; `--work-dir` is the run directory and must be POSIX.
+
 ```
-dst/                          # run root — bookkeeping, NOT served
-├── segmentation/             # <- point neuroglancer here
-│   ├── info                  #    ..., "mesh": "mesh", "skeletons": "skeleton"
-│   ├── 32_32_32/ 64_64_64/ …
-│   ├── mesh/       info (neuroglancer_multilod_draco) + <id>, <id>.index
-│   └── skeleton/   info (neuroglancer_skeletons)      + <id>
+--dst  (local path or s3://…)      # <- point neuroglancer here; ONLY volume data
+├── info                           #    ..., "mesh": "mesh", "skeletons": "skeleton"
+├── 32_32_32/ 64_64_64/ …
+├── mesh/       info (neuroglancer_multilod_draco) + <id>, <id>.index
+└── skeleton/   info (neuroglancer_skeletons)      + <id>
+
+--work-dir  (filesystem only)      # bookkeeping, NOT served
 ├── metrics.db  progress.*.jsonl  failures.*.jsonl  fusion_stats.jsonl
-└── chunked/  skel_chunked/       # stage-1 fragments
+├── run_summary.json
+└── chunked/  skel_chunked/        # stage-1 fragments
 ```
 
-Run bookkeeping stays in `dst`, deliberately outside the volume, so the volume is
-servable as-is. `OutputConfig.mesh_dir` / `skeleton_dir` are therefore
-subdirectories of the **volume**, not of `dst`.
+`OutputConfig.mesh_dir` / `skeleton_dir` are subdirectories of the **volume**;
+everything else resolves against `work_dir`. The work dir must be a filesystem
+path because it holds a sqlite DB, appended JSONL manifests, and a fragment store
+read back with ordinary file I/O — `OutputConfig.check_work_dir_is_local` rejects
+a remote one up front rather than failing deep inside a write. For a local `--dst`
+the work dir defaults to its parent, which reproduces the layout from when `--dst`
+meant the run root.
+
+### What the split costs, and the guard that pays for it
+
+Bookkeeping used to live *inside* the output, so the record and the data shared a
+fate: `rm -rf dst` took both, and the next run correctly started over. They no
+longer share a fate. Clear the destination and the manifest still says every task
+is done — the run would skip all of them, write nothing, and exit reporting
+success. Nothing raises; the loss surfaces only as an empty layer in the viewer.
+
+`ops/_progress.check_manifest_matches_output` closes this. Before a stage does any
+work, if it is resuming and its manifest records completed tasks, the stage's own
+`info` must be present at the destination; otherwise it raises `StaleManifest`
+naming `--no-resume` as the override. Three details are load-bearing:
+
+- It probes the **stage's own** `info` (`<dst>/mesh/info`), not the segmentation
+  `info`, so meshing into a volume whose labels were never exported — a legitimate
+  `--stages mesh` run — is not mistaken for a cleared destination.
+- It runs **before** `write_mesh_info` / `write_skeleton_info`, which would
+  otherwise recreate the very file being probed and mask the problem.
+- It is skipped when `resume=False`, which is an explicit fresh start.
+
+An emptiness check on the work dir was considered and rejected: stages are run as
+separate invocations (`--stages seg` then `--stages index,mesh,skel`), so a
+non-empty work dir is the normal state for every run after the first. Such a rule
+would refuse legitimate runs constantly, and the `--resume` flag needed to placate
+it would end up in every sbatch script — passing silently in exactly the case that
+matters. Agreement between manifest and destination fires only on the hazard.
 
 The `seg` stage (`ops/export_roi_seg`, wrapping `em_volume_tools.extract_roi`)
 copies the ROI's labels into that volume. It exports the **block-aligned** region,
@@ -354,7 +390,7 @@ Task granularity differs per stage, and so does what a failure costs:
 
 **Stage 2 isolates** because bodies are independent: skipping a bad one costs
 exactly that body, is recorded in the manifest, is logged with its traceback to
-`dst/failures.{mesh,skel}.jsonl`, and is retried on the next run. One pathological
+`<work_dir>/failures.{mesh,skel}.jsonl`, and is retried on the next run. One pathological
 body cannot kill hour 11 of a 50k-body run.
 
 **Stage 1 does not**, and that is the point. Stage 2 **aggregates across blocks**,

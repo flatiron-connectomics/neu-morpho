@@ -35,7 +35,7 @@ import numpy as np
 
 from em_blockrun import Manifest, block_map, iter_blocks
 
-from ._progress import group_counts, is_complete
+from ._progress import check_manifest_matches_output, group_counts, is_complete
 
 logger = logging.getLogger(__name__)
 
@@ -124,14 +124,34 @@ def _roi_nm(scales, roi, roi_voxel_size, block_shape, align_to_blocks):
     return np.asarray(region[:3], float) * v, np.asarray(region[3:], float) * v
 
 
-def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[int]) -> tuple:
+def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[int],
+                attempts: int = 5) -> tuple:
+    """Copy one block, retrying transient store failures.
+
+    Stage-1 block tasks are fail-fast on purpose (see ops/_progress.py), which is
+    right for meshing — but a *copy* block feeds no aggregation and rewriting the
+    same voxels to the same region is idempotent, so a transient blip should not
+    end a run that has already copied terabytes. Observed: a single
+    ``Connection reset by peer`` on the destination killed a 10,692-block copy.
+
+    A ``"written"``/``"empty"`` result describes the *data*, not whether an object
+    was created: TensorStore does not persist chunks that are entirely the fill
+    value, so an all-zero block writes nothing and neuroglancer reads the absent
+    chunk as zero.
+    """
     from em_volume_tools.backends.base import open_backend
+    from em_volume_tools.retry import with_retry
 
     src_region = tuple(slice(o + s.start, o + s.stop)
                        for o, s in zip(src_origin, block.region))
-    data = open_backend(src_spec).read_region(src_region)
-    open_backend(dst_spec).write_region(block.region, data)
-    return (block.index, "written" if data.any() else "empty")
+
+    def copy() -> bool:
+        data = open_backend(src_spec).read_region(src_region)
+        open_backend(dst_spec).write_region(block.region, data)
+        return bool(data.any())
+
+    nonzero = with_retry(copy, attempts=attempts, label=f"block {block.index}")
+    return (block.index, "written" if nonzero else "empty")
 
 
 def export_roi_seg(
@@ -174,9 +194,24 @@ def export_roi_seg(
                            block_shape, align_to_blocks)
     src_dtype = str(open_backend(levels[scale_indices[0]][1]).dtype)
 
-    progress = progress_path or (out_dir.rstrip("/") + "/../progress.seg.jsonl")
+    # The manifest must be on a filesystem (it is appended to), so it cannot
+    # default to a sibling of out_dir once out_dir may be an object store. The
+    # driver always passes it explicitly, pointed at the work dir.
+    if progress_path:
+        progress = progress_path
+    else:
+        from em_volume_tools import is_local
+        if not is_local(out_dir):
+            raise ValueError(
+                f"progress_path is required when out_dir is remote ({out_dir}): "
+                "the manifest is an appended JSONL file and needs a filesystem")
+        progress = out_dir.rstrip("/") + "/../progress.seg.jsonl"
     manifest = Manifest(progress)
     manifest.load() if resume else manifest.reset()
+    # Same hazard as the mesh/skel stages: the manifest now lives apart from the
+    # data, so a cleared destination would otherwise be resumed as "all done".
+    check_manifest_matches_output(manifest, out_dir, stage="seg",
+                                  progress_path=progress, resume=resume)
 
     written: list[dict] = []
     try:

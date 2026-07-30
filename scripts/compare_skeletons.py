@@ -1,15 +1,15 @@
 """Compare kimimaro vs skeletor skeletonization — synthetic bodies or real data.
 
     # synthetic bodies:
-    pixi run -e dev python scripts/compare_skeletons.py [--shapes rod,rod_with_bulb,...]
+    python scripts/compare_skeletons.py [--shapes rod,rod_with_bulb,...]
 
     # a real body crop (both methods; needs the seg volume + the body's bbox):
-    pixi run -e dev python scripts/compare_skeletons.py \
+    python scripts/compare_skeletons.py \
         --volume /mnt/ceph/.../seg --backend neuroglancer_precomputed --scale 2 \
         --body 231668 --bbox z0,y0,x0,z1,y1,x1 --voxel 32,32,32
 
     # a real mesh file (skeletor methods only):
-    pixi run -e dev python scripts/compare_skeletons.py --mesh body231668.obj
+    python scripts/compare_skeletons.py --mesh body231668.obj
 
 Per body it prints a metrics table and writes to --out/<body>/:
   - comparison.html : self-contained interactive 3D — one panel per method, the

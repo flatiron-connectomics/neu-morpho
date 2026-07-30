@@ -29,8 +29,8 @@ from ..occupancy import occupied_blocks
 from ..precomputed import check_quantization, write_body_multires, write_mesh_info
 from .. import fragments as _frag
 from .. import roi as _roi
-from ._progress import (FAILED, FailureBreaker, group_counts, guarded, is_complete,
-                        write_failures)
+from ._progress import (FAILED, FailureBreaker, check_manifest_matches_output,
+                        group_counts, guarded, is_complete, write_failures)
 
 logger = logging.getLogger(__name__)
 
@@ -126,27 +126,34 @@ def meshify(
                                    allowlist=None, dilate=occupancy_dilate)
         blocks = [b for b in blocks if b.index in occupied]
 
-    out_dir = out.volume_dir() + "/" + out.mesh_dir.strip("/")   # inside the volume
-    chunked_dir = out.chunked_dir or (out.dst.rstrip("/") + "/chunked")
-    # INSIDE dst, like the fragments and the metrics DB. A manifest sitting beside
-    # dst outlives `rm -rf dst`, and the next run then skips every task as "done"
-    # and reports success while writing nothing.
-    progress = out.progress_path or (out.dst.rstrip("/") + "/progress.mesh.jsonl")
+    out.check_work_dir_is_local()
+    out_dir = out.mesh_out()                 # inside the volume; may be s3://
+    # Fragments and the manifest live in the POSIX work dir, never in dst: the
+    # fragment store is read back with ordinary file I/O and the manifest is
+    # appended to. Because they no longer share dst's fate, a manifest can
+    # outlive its data — the driver's resume guard is what catches that.
+    chunked_dir = out.chunked_dir or out.work("chunked")
+    progress = out.progress_path or out.work("progress.mesh.jsonl")
     # multires octree base, in nm (model space = physical nm, grid origin at 0)
     chunk_shape_xyz = block_chunk_shape_xyz(mesh_cfg.block_shape, mesh_voxel_size)
     grid_origin_xyz = [0.0, 0.0, 0.0]
 
     # Before anything expensive: would Draco quantization collapse coarse LODs?
     check_quantization(mesh_cfg, chunk_shape_xyz, mesh_voxel_size)
+
+    manifest = Manifest(progress)
+    manifest.load() if resume else manifest.reset()
+    # Must precede write_mesh_info, which would recreate the very 'info' the
+    # check probes for and so mask a destination that was cleared.
+    check_manifest_matches_output(manifest, out_dir, stage="mesh",
+                                  progress_path=progress, resume=resume)
+
     write_mesh_info(out_dir, mesh_cfg)      # identity transform (vertices are nm)
 
     db = None
     if db_path is not None:
         from ..metrics_db import MetricsDB
         db = MetricsDB(db_path)
-
-    manifest = Manifest(progress)
-    manifest.load() if resume else manifest.reset()
     failures: list[dict] = []           # isolated stage-2 failures (see _progress.py)
     failures_path = None
     breaker = FailureBreaker(max_consecutive_failures)
@@ -200,7 +207,7 @@ def meshify(
         manifest.close()
         if db is not None:
             db.close()
-        failures_path = write_failures(out.dst.rstrip("/") + "/failures.mesh.jsonl", failures)
+        failures_path = write_failures(out.work("failures.mesh.jsonl"), failures)
         if failures:
             logger.warning("assemble: %d bodies failed and were skipped -> %s "
                            "(re-run to retry them)", len(failures), failures_path)

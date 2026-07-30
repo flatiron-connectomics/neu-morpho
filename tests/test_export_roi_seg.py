@@ -125,7 +125,9 @@ def test_link_subresources_rejects_a_wrong_or_missing_target(tmp_path):
     from em_seg_morpho.precomputed import link_subresources
 
     out = _volume_with_subresources(tmp_path)
-    with pytest.raises(FileNotFoundError, match="not a directory"):
+    # existence is tested by reading <sub>/info, so object stores (no directories)
+    # take the same path as local files
+    with pytest.raises(FileNotFoundError, match="does not exist"):
         link_subresources(out, mesh="nope")
     # mesh and skeleton dirs swapped -> caught by @type
     with pytest.raises(ValueError, match="expected 'neuroglancer_multilod_draco'"):
@@ -148,14 +150,34 @@ def test_link_subresources_refuses_an_image_volume(tmp_path):
         link_subresources(out, mesh="mesh")
 
 
-def test_ops_write_inside_the_volume(tmp_path):
-    """mesh_dir/skeleton_dir are subdirectories of the VOLUME, not of dst."""
+def test_ops_write_inside_the_volume():
+    """mesh_dir/skeleton_dir are subdirectories of the VOLUME; bookkeeping is not."""
     from em_seg_morpho.config import OutputConfig
 
-    out = OutputConfig(dst="/data/run")
+    out = OutputConfig(dst="/data/run/segmentation", work_dir="/scratch/run")
     assert out.volume_dir() == "/data/run/segmentation"
-    # bookkeeping stays outside the volume so the volume stays servable
-    assert not out.volume_dir().startswith("/data/run/segmentation/progress")
+    assert out.mesh_out() == "/data/run/segmentation/mesh"
+    assert out.skeleton_out() == "/data/run/segmentation/skeleton"
+    # bookkeeping goes to the work dir, never into the served volume
+    assert out.work("progress.mesh.jsonl") == "/scratch/run/progress.mesh.jsonl"
+    assert not out.work("chunked").startswith(out.volume_dir())
+
+
+def test_dst_may_be_remote_but_work_dir_may_not():
+    """Only the data destination can be an object store."""
+    from em_seg_morpho.config import OutputConfig
+
+    remote = OutputConfig(dst="s3://bucket/sample3/segmentation", work_dir="/scratch/run")
+    assert remote.volume_dir() == "s3://bucket/sample3/segmentation"
+    assert remote.mesh_out() == "s3://bucket/sample3/segmentation/mesh"
+    remote.check_work_dir_is_local()          # local work dir: fine
+
+    # sqlite, appended JSONL and the fragment store all need a filesystem
+    bad = OutputConfig(dst="s3://bucket/vol", work_dir="s3://bucket/work")
+    with pytest.raises(ValueError, match="work_dir must be a filesystem path"):
+        bad.check_work_dir_is_local()
+    with pytest.raises(ValueError, match="work_dir is required"):
+        OutputConfig(dst="/data/vol").check_work_dir_is_local()
 
 
 def test_align_can_be_turned_off(tmp_path):
@@ -245,3 +267,99 @@ def test_scale_cost_reports_the_expensive_level(tmp_path):
     assert cost[0]["n_voxels"] == 32 ** 3
     # each coarser level is 8x cheaper, so level 0 dominates
     assert cost[0]["n_voxels"] == 8 * cost[1]["n_voxels"] == 64 * cost[2]["n_voxels"]
+
+
+def _one_block_and_specs(tmp_path):
+    """A real source, a real precomputed destination, and one block to copy."""
+    from em_blockrun import iter_blocks
+
+    from em_volume_tools.backends.tensorstore import TensorStoreBackend
+    from em_volume_tools.profiles import precomputed_create_spec
+
+    vol = np.zeros((32, 32, 32), np.uint64)
+    vol[4:12, 4:12, 4:12] = 3
+    src = _write_seg(str(tmp_path / "seg.zarr"), vol)
+    dst_dir = str(tmp_path / "out")
+    dst_spec = precomputed_create_spec("s3-neuroglancer", dst_dir, (32, 32, 32), "uint64",
+                                       resolution_zyx=(32.0,) * 3, scale_index=0,
+                                       type_="segmentation", encoding="raw",
+                                       voxel_offset_zyx=(0, 0, 0))
+    dst = TensorStoreBackend.open_or_create(dst_spec, resume=False,
+                                            delete_existing=True).to_spec()
+    return src, dst, list(iter_blocks((32, 32, 32), (32, 32, 32)))[0]
+
+
+def _flaky_open(monkeypatch, error: str, fail_on: int):
+    """Wrap open_backend so the ``fail_on``-th call raises ``error``."""
+    from em_volume_tools.backends import base as be_base
+
+    calls = {"n": 0}
+    original = be_base.open_backend
+
+    def wrapper(spec):
+        calls["n"] += 1
+        if calls["n"] == fail_on:
+            raise ValueError(error)
+        return original(spec)
+
+    monkeypatch.setattr(be_base, "open_backend", wrapper)
+    return calls
+
+
+def test_copy_block_survives_a_transient_store_failure(tmp_path, monkeypatch):
+    """A TLS reset mid-copy must not end a run that has already copied terabytes.
+
+    Stage-1 blocks are fail-fast by design, but a copy block feeds no aggregation
+    and rewriting the same voxels is idempotent, so it retries instead.
+    """
+    from em_seg_morpho.ops.export_roi_seg import _copy_block
+
+    src, dst, block = _one_block_and_specs(tmp_path)
+    calls = _flaky_open(monkeypatch,
+                        "UNAVAILABLE: CURL error SSL connect error: Recv failure: "
+                        "Connection reset by peer [curl_code='35']", fail_on=1)
+
+    idx, status = _copy_block(block, src_spec=src, dst_spec=dst, src_origin=(0, 0, 0),
+                              attempts=3)
+    assert status == "written"
+    assert calls["n"] > 1, "the transient failure was never triggered"
+
+
+def test_a_403_during_copy_is_not_retried(tmp_path, monkeypatch):
+    """Permissions will not fix themselves; retrying just burns the budget."""
+    from em_seg_morpho.ops.export_roi_seg import _copy_block
+
+    src, dst, block = _one_block_and_specs(tmp_path)
+    calls = _flaky_open(monkeypatch,
+                        "PERMISSION_DENIED: AccessDenied [http_response_code='403']",
+                        fail_on=1)
+
+    with pytest.raises(ValueError, match="PERMISSION_DENIED"):
+        _copy_block(block, src_spec=src, dst_spec=dst, src_origin=(0, 0, 0), attempts=5)
+    assert calls["n"] == 1, "a 403 must fail on the first attempt, with no retries"
+
+
+def test_empty_blocks_write_no_objects(tmp_path):
+    """'empty' describes the DATA, not the action — TensorStore elides fill chunks.
+
+    So an all-zero block creates no object at all, and neuroglancer reads the
+    absent chunk as zero. This is why there is no point skipping the write; the
+    cost worth avoiding is the READ.
+    """
+    import os
+
+    vol = np.zeros((64, 32, 32), np.uint64)
+    vol[4:12, 4:12, 4:12] = 3            # only the first 32-block has labels
+    src = _write_seg(str(tmp_path / "seg.zarr"), vol)
+    out = str(tmp_path / "out")
+
+    summary = export_roi_seg(src, out, roi=None, roi_voxel_size=(32.0, 32.0, 32.0),
+                            block_shape=(32, 32, 32), copy_block=(32, 32, 32),
+                            scale_indices=[0], encoding="raw", client=None,
+                            progress_path=str(tmp_path / "p.jsonl"))
+    counts = summary["scales"][0]["counts"]
+    assert counts.get("empty", 0) >= 1 and counts.get("written", 0) >= 1
+
+    objects = [f for _, _, files in os.walk(out) for f in files if f != "info"]
+    assert len(objects) == counts["written"], \
+        f"{len(objects)} objects for {counts['written']} written + {counts.get('empty')} empty"

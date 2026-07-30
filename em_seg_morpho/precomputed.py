@@ -16,15 +16,21 @@ store *xyz*. vol2mesh flips for meshes internally; :func:`encode_skeleton` does
 the same flip for skeletons. Get it wrong and skeletons come out mirrored through
 the z=x diagonal relative to their meshes — the same class of bug as the dropped
 crop origin (see coords.py).
+
+**Every write here goes through em-volume-tools' kvstore helpers**, never
+``open()``, so ``output_dir`` may equally be a local path or an ``s3://`` URL.
+vol2mesh makes this possible by separating encoding from writing: we use
+``multires.build_info`` / ``encode_multilod_object``, which return a dict and
+bytes, and never ``multires.write_info`` / ``write_object_mesh``, which would
+write to the filesystem behind our back.
 """
 
 from __future__ import annotations
 
-import json
-import os
 from typing import Sequence
 
 import numpy as np
+from em_volume_tools import exists, read_json, write_bytes, write_json
 
 from .config import MeshConfig
 
@@ -94,11 +100,17 @@ def check_quantization(cfg: MeshConfig, chunk_shape_xyz: Sequence[float],
 
 def write_mesh_info(output_dir: str, cfg: MeshConfig, *, transform=None,
                     lod_scale_multiplier: float = 1.0) -> None:
-    """Write the multi-resolution mesh ``info`` (once per output volume)."""
+    """Write the multi-resolution mesh ``info`` (once per output volume).
+
+    ``build_info``, not ``multires.write_info`` — the latter writes to the local
+    filesystem, which would silently bypass an ``s3://`` destination.
+    """
     from vol2mesh import multires
 
-    multires.write_info(output_dir, vertex_quantization_bits=cfg.draco_quantization_bits,
-                        transform=transform, lod_scale_multiplier=lod_scale_multiplier)
+    info = multires.build_info(vertex_quantization_bits=cfg.draco_quantization_bits,
+                               transform=transform,
+                               lod_scale_multiplier=lod_scale_multiplier)
+    write_json(output_dir, info, "info")
 
 
 def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
@@ -129,17 +141,27 @@ def write_body_multires(output_dir: str, body_id: int, mesh, cfg: MeshConfig,
     if not data_bytes:
         return 0
 
-    os.makedirs(output_dir, exist_ok=True)
-    with open(f"{output_dir}/{int(body_id)}", "wb") as f:
-        f.write(data_bytes)
-    with open(f"{output_dir}/{int(body_id)}.index", "wb") as f:
-        f.write(index_bytes)
+    # Data before index: the index is what makes a body discoverable, so writing
+    # it last means a torn write leaves an unreferenced blob rather than an index
+    # pointing at data that is not there yet.
+    write_bytes(output_dir, data_bytes, str(int(body_id)))
+    write_bytes(output_dir, index_bytes, f"{int(body_id)}.index")
     return sum(counts)
 
 
 # --------------------------------------------------------------------------- #
 # Skeletons
 # --------------------------------------------------------------------------- #
+def volume_exists(volume_dir: str) -> bool:
+    """True if a precomputed ``info`` is present at ``volume_dir``.
+
+    The cheap liveness test for a destination — one request, and it works for
+    object stores where there is no directory to stat. Used to catch a manifest
+    that has outlived the data it describes (see the driver's resume guard).
+    """
+    return exists(volume_dir, "info")
+
+
 def link_subresources(volume_dir: str, *, mesh: str | None = None,
                       skeletons: str | None = None,
                       segment_properties: str | None = None) -> dict:
@@ -151,17 +173,21 @@ def link_subresources(volume_dir: str, *, mesh: str | None = None,
     their meshes and their skeletons together; without them the meshes and
     skeletons are separate sources the viewer has no reason to associate.
 
-    Each named subdirectory must exist and carry the right ``@type`` — pointing
+    Each named subresource must exist and carry the right ``@type`` — pointing
     the volume at the wrong directory fails silently in the viewer, so it is
     checked here instead. Returns the keys that were set.
+
+    Existence is tested by reading ``<sub>/info``, not by listing a directory:
+    object stores have no directories, and the subresource's own ``info`` is the
+    thing that actually has to be there for the viewer.
     """
     expected = {"mesh": "neuroglancer_multilod_draco",
                 "skeletons": "neuroglancer_skeletons"}
-    info_path = os.path.join(volume_dir, "info")
-    with open(info_path) as f:
-        info = json.load(f)
+    info = read_json(volume_dir, "info")
+    if info is None:
+        raise FileNotFoundError(f"no precomputed 'info' at {volume_dir}")
     if info.get("type") != "segmentation":
-        raise ValueError(f"{info_path} is not a segmentation volume "
+        raise ValueError(f"{volume_dir}/info is not a segmentation volume "
                          f"(type={info.get('type')!r}); mesh/skeletons do not apply")
 
     changed: dict[str, str] = {}
@@ -169,25 +195,21 @@ def link_subresources(volume_dir: str, *, mesh: str | None = None,
                      ("segment_properties", segment_properties)):
         if sub is None:
             continue
-        sub_dir = os.path.join(volume_dir, sub)
-        if not os.path.isdir(sub_dir):
+        sub_info = read_json(volume_dir, sub, "info")
+        if sub_info is None:
             raise FileNotFoundError(
-                f"info would point {key!r} at {sub!r}, which is not a directory "
-                f"under {volume_dir}")
+                f"info would point {key!r} at {sub!r}, but {volume_dir}/{sub}/info "
+                f"does not exist")
         want = expected.get(key)
-        if want:
-            with open(os.path.join(sub_dir, "info")) as f:
-                got = json.load(f).get("@type")
-            if got != want:
-                raise ValueError(f"{sub}/info has @type {got!r}, expected {want!r} "
-                                 f"for the {key!r} key")
+        if want and sub_info.get("@type") != want:
+            raise ValueError(f"{sub}/info has @type {sub_info.get('@type')!r}, "
+                             f"expected {want!r} for the {key!r} key")
         info[key] = sub
         changed[key] = sub
 
-    tmp = info_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(info, f, indent=2)
-    os.replace(tmp, info_path)          # never leave a half-written volume info
+    # A single kvstore write; no tmp+rename dance, because both the file driver
+    # and object stores make an individual key write atomic.
+    write_json(volume_dir, info, "info")
     return changed
 
 
@@ -223,9 +245,7 @@ def write_skeleton_info(output_dir: str, *, transform: Sequence[float] | None = 
         "transform": list(transform if transform is not None else IDENTITY_TRANSFORM),
         "vertex_attributes": attrs,
     }
-    os.makedirs(output_dir, exist_ok=True)
-    with open(f"{output_dir}/info", "w") as f:
-        json.dump(info, f, indent=2)
+    write_json(output_dir, info, "info")
 
 
 def encode_skeleton(skeleton) -> bytes:
@@ -258,10 +278,7 @@ def write_body_skeleton(output_dir: str, body_id: int, skeleton) -> int:
     if skeleton is None or len(skeleton.vertices) == 0:
         return 0
     data = encode_skeleton(skeleton)
-    os.makedirs(output_dir, exist_ok=True)
-    path = f"{output_dir}/{int(body_id)}"
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)                     # never leave a torn blob behind
+    # One atomic key write — the previous tmp+os.replace guarded against a torn
+    # blob, which a single kvstore write already rules out.
+    write_bytes(output_dir, data, str(int(body_id)))
     return len(skeleton.vertices)

@@ -107,28 +107,64 @@ class SkeletonConfig:
 
 @dataclass
 class OutputConfig:
-    """Where results go."""
+    """Where results go — **data** and **bookkeeping** are separate destinations.
 
-    dst: str = ""                            # run root: the volume + all bookkeeping
+    ``dst`` is the published precomputed volume and may be an ``s3://`` URL;
+    ``work_dir`` is the run directory and must be an ordinary filesystem path,
+    because it holds a sqlite DB, appended JSONL manifests and the stage-1
+    fragment stores, none of which work over an object store.
 
-    # The published neuroglancer volume is dst/<seg_dir>, and meshes/skeletons go
-    # INSIDE it — the precomputed spec's `mesh` / `skeletons` info keys name
-    # subdirectories of the volume root, so one layer carries labels, meshes and
-    # skeletons together. Run bookkeeping (metrics.db, manifests, fragments, logs)
-    # deliberately stays in dst, OUTSIDE the volume, so the volume is servable.
-    seg_dir: str = "segmentation"            # the precomputed volume, under dst
+    **The split costs a safety property, deliberately.** Bookkeeping used to live
+    inside the output, so ``rm -rf`` took the record and the data together and
+    the next run correctly started over. Now a manifest can outlive the data it
+    describes, and a resumed run would skip every task and report success having
+    written nothing. The driver guards this by refusing to resume when a manifest
+    claims completed work but ``dst`` has no ``info`` — see
+    ``examples/run_morpho_slurm.py``. Anything writing to ``dst`` outside that
+    driver has to make the same check.
+    """
+
+    dst: str = ""            # the precomputed VOLUME root: local path or s3:// URL
+    work_dir: str = ""       # run dir: fragments, manifests, DB, logs — POSIX only
+
+    # Meshes and skeletons go INSIDE the volume: the precomputed spec's `mesh` /
+    # `skeletons` info keys name subdirectories of the volume root, so a single
+    # neuroglancer layer carries labels, meshes and skeletons together.
     mesh_dir: str = "mesh"                   # subdirectory of the VOLUME
     skeleton_dir: str = "skeleton"           # subdirectory of the VOLUME
 
-    chunked_dir: str = ""                    # stage-1 fragments (local/ceph); default dst+"/chunked"
-    skel_chunked_dir: str = ""               # stage-1 skeleton fragments; default dst+"/skel_chunked"
-    # em-blockrun manifest. Defaults to dst/progress.{mesh,skel}.jsonl — INSIDE
-    # dst deliberately, so deleting the output also clears the record of it. A
-    # manifest that outlives its outputs makes the next run skip everything as
-    # "already done" and report success having written nothing.
-    progress_path: str | None = None
+    chunked_dir: str = ""                    # stage-1 fragments; default work_dir+"/chunked"
+    skel_chunked_dir: str = ""               # stage-1 skeleton fragments; default work_dir+"/skel_chunked"
+    progress_path: str | None = None         # default work_dir/progress.{mesh,skel}.jsonl
     extra: dict = field(default_factory=dict)
 
     def volume_dir(self) -> str:
         """The precomputed volume root — what you point neuroglancer at."""
-        return self.dst.rstrip("/") + "/" + self.seg_dir.strip("/")
+        return self.dst.rstrip("/")
+
+    def mesh_out(self) -> str:
+        """Where mesh fragments go: a subdirectory of the volume."""
+        return self.volume_dir() + "/" + self.mesh_dir.strip("/")
+
+    def skeleton_out(self) -> str:
+        """Where skeleton blobs go: a subdirectory of the volume."""
+        return self.volume_dir() + "/" + self.skeleton_dir.strip("/")
+
+    def work(self, *parts: str) -> str:
+        """Join ``parts`` onto the POSIX work directory."""
+        segs = [self.work_dir.rstrip("/")] + [p.strip("/") for p in parts if p]
+        return "/".join(s for s in segs if s)
+
+    def check_work_dir_is_local(self) -> None:
+        """Fail early if ``work_dir`` is remote — sqlite and append cannot use it."""
+        from em_volume_tools import is_local
+
+        if not self.work_dir:
+            raise ValueError("work_dir is required: it holds the fragments, "
+                             "manifests and metrics DB")
+        if not is_local(self.work_dir):
+            raise ValueError(
+                f"work_dir must be a filesystem path, got {self.work_dir!r}. It "
+                "holds a sqlite DB, appended JSONL manifests and the stage-1 "
+                "fragment stores, none of which work over an object store. Only "
+                "--dst may be remote.")

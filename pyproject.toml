@@ -7,11 +7,39 @@ name = "em-seg-morpho"
 version = "0.1.0"
 description = "Segment morphology: multi-resolution Draco meshes and skeletons from segmentation volumes, into neuroglancer-precomputed."
 readme = "README.md"
-requires-python = ">=3.12"
+# vol2mesh and dvidutils are only built for py312 on flyem-forge (no py313
+# build), which pins this package and the whole shared env to 3.12.
+requires-python = ">=3.12,<3.13"
 authors = [{ name = "Erik Schomburg", email = "eschomburg@flatironinstitute.org" }]
-# Runtime deps (vol2mesh, kimimaro, em-volume-tools, em-blockrun, tensorstore, …)
-# are provided via pixi (conda-forge/flyem-forge + PyPI); see pixi.toml.
-dependencies = []
+#
+# NOT listed below, because they are conda-only (flyem-forge) with no PyPI
+# equivalent — pip can never resolve them, so the conda env must provide them:
+#   vol2mesh    multi-resolution Draco meshes for neuroglancer
+#   dvidutils   Draco codec backing vol2mesh Mesh.serialize('drc')
+#
+# In the shared conda env the rest come from conda-forge, so install with
+# `pip install --no-deps -e .` to keep pip from re-resolving them.
+dependencies = [
+    "numpy>=2",
+    "scipy",
+    "tensorstore>=0.1.70",
+    "kimimaro",        # TEASAR skeletonization (voxel mask)
+    "osteoid",         # Skeleton class, split out of kimimaro
+    "DracoPy",         # Draco codec binding used by vol2mesh.multires
+    "trimesh",         # vol2mesh.multires LOD slicing (trim_mesh_to_box)
+    "em-volume-tools", # segmentation-array I/O
+    "em-blockrun",     # dask/SLURM chunked-map substrate
+]
+
+[project.optional-dependencies]
+# Imported lazily by em_seg_morpho/skelcompare.py only; the meshing and
+# skeletonization pipelines do not need them.
+compare = [
+    "networkx",
+    "plotly",   # interactive 3D skeleton comparison (self-contained HTML)
+    "skeletor", # mesh skeletonization (wavefront / teasar) + post-processing
+]
+dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["em_seg_morpho"]

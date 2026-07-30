@@ -90,7 +90,7 @@ def test_skeleton_fuse_failure_is_isolated_and_retried(tmp_path, monkeypatch):
     mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     cfg = SkeletonConfig(**SKEL_CFG)
 
     real = mod.fuse_body
@@ -129,7 +129,7 @@ def test_mesh_assemble_failure_is_isolated_and_retried(tmp_path, monkeypatch):
     mod = importlib.import_module("em_seg_morpho.ops.meshify")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     cfg = MeshConfig(**MESH_CFG)
 
     real = mod.assemble_body
@@ -162,7 +162,7 @@ def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
     from em_seg_morpho.metrics_db import MetricsDB
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "m.db")
 
     def flaky(fragments, cfg_, body_id=None, stats=None):
@@ -249,7 +249,7 @@ def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path,
     from em_seg_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def always_fail(*a, **k):
         raise ValueError("everything is broken")
@@ -275,7 +275,7 @@ def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
     from em_seg_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     seen = {"n": 0}
 
     def oom(*a, **k):
@@ -296,7 +296,7 @@ def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monke
     from em_seg_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "m.db")
     real = mod.fuse_body
 
@@ -329,7 +329,7 @@ def test_stage1_block_failure_still_aborts(tmp_path, monkeypatch):
     mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def boom(*a, **k):
         raise RuntimeError("block read failure")
@@ -344,7 +344,7 @@ def test_stage1_mesh_block_failure_still_aborts(tmp_path, monkeypatch):
     mod = importlib.import_module("em_seg_morpho.ops.meshify")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     def boom(*a, **k):
         raise RuntimeError("block mesh failure")
@@ -360,7 +360,7 @@ def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
     mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     cfg = SkeletonConfig(**SKEL_CFG)
 
     real = mod.skeletonize_block

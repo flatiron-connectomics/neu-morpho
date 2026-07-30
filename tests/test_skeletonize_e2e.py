@@ -53,7 +53,7 @@ def _cfg():
 
 def test_skeletonize_end_to_end(tmp_path):
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
 
     summary = skeletonize_segments(src, out, _cfg(), db_path=db_path, client=None)
@@ -83,7 +83,7 @@ def test_metrics_land_in_db(tmp_path):
     from em_seg_morpho.metrics_db import MetricsDB
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
     skeletonize_segments(src, out, _cfg(), db_path=db_path, client=None)
 
@@ -99,7 +99,7 @@ def test_metrics_land_in_db(tmp_path):
 
 def test_allowlist_restricts_bodies(tmp_path):
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     summary = skeletonize_segments(src, out, _cfg(), allowlist=[7], client=None)
 
     assert os.path.exists(os.path.join(summary["out_dir"], "7"))
@@ -109,7 +109,7 @@ def test_allowlist_restricts_bodies(tmp_path):
 
 def test_resume_skips_done_and_stage2_reuses_fragments(tmp_path):
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     first = skeletonize_segments(src, out, _cfg(), stages=("skel-chunk",), client=None)
     assert first["chunk_counts"].get("written") == 3
@@ -326,7 +326,7 @@ def test_fusion_stats_attribute_what_was_dropped():
 
 def test_op_reports_fusion_stats(tmp_path):
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _arbor_with_twigs())
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     stats_path = str(tmp_path / "fusion.jsonl")
 
     cfg = replace(_cfg(), block_shape=(32, 32, 32), postprocess_dust_nm=200.0,
@@ -348,7 +348,7 @@ def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[8:24, 14:18, 14:18] = 7          # ~128 nm of cable, well under the threshold
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), vol)
-    out = OutputConfig(dst=str(tmp_path / "out"))
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
 
     cfg = replace(_cfg(), postprocess_dust_nm=1500.0)
     summary = skeletonize_segments(src, out, cfg, client=None)
@@ -358,6 +358,6 @@ def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
     assert not os.path.exists(os.path.join(summary["out_dir"], "7"))
 
     # with the threshold off, the same body survives
-    out2 = OutputConfig(dst=str(tmp_path / "out2"))
+    out2 = OutputConfig(dst=str(tmp_path / "out2" / "segmentation"), work_dir=str(tmp_path / "out2"))
     s2 = skeletonize_segments(src, out2, _cfg(), client=None)
     assert s2["status_counts"].get("written") == 1

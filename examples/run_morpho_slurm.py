@@ -9,15 +9,28 @@ idempotent, so re-running the same command resumes.
     python examples/run_morpho_slurm.py --src /mnt/ceph/.../seg --describe
 
     # 1. small ROI, locally, to see it work end to end
-    python examples/run_morpho_slurm.py --src ... --dst /mnt/ceph/.../morpho \\
+    python examples/run_morpho_slurm.py --src ... \\
+        --dst /mnt/ceph/.../morpho/segmentation --work-dir /mnt/ceph/.../morpho \\
         --config configs/dask-local.yaml --workers 4 \\
         --roi 0,0,0,512,2048,2048 --stages index,mesh,skel
 
-    # 2. the same ROI on SLURM, surviving logout
-    nohup python -u examples/run_morpho_slurm.py --src ... --dst ... \\
+    # 2. the same ROI on SLURM, surviving logout, publishing to s3
+    nohup python -u examples/run_morpho_slurm.py --src ... \\
+        --dst s3://bucket/sample3/segmentation --work-dir /mnt/ceph/.../morpho \\
         --config configs/dask-slurm-any.yaml --workers 48 \\
         --roi 0,0,0,512,2048,2048 --stages index,mesh,skel > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
+
+**--dst is the published volume; --work-dir is everything else.** --dst holds the
+segmentation scales with meshes and skeletons inside it, and may be an ``s3://``
+URL. --work-dir must be an ordinary filesystem path: it holds the stage-1
+fragments, the sqlite metrics DB and the appended JSONL manifests, none of which
+work over an object store.
+
+Because the two are separate, a manifest can outlive the data it describes —
+clear --dst and a resumed run would skip everything and report success having
+written nothing. Each stage refuses to resume when its manifest records completed
+work but its output ``info`` is gone; --no-resume is the explicit override.
 
 The ROI is in **mesh/skeleton-scale voxels** and filters blocks on the *global*
 grid, so widening it later re-uses everything already done rather than redoing it
@@ -33,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -42,6 +56,7 @@ from em_blockrun import start_dask
 
 from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from em_seg_morpho.metrics_db import MetricsDB
+from em_seg_morpho.ops.export_roi_seg import DEFAULT_COPY_BLOCK as SEG_COPY_BLOCK
 from em_seg_morpho.ops.export_roi_seg import scale_cost
 from em_seg_morpho.ops import (export_roi_seg, index_segments, meshify,
                                skeletonize_segments)
@@ -58,7 +73,15 @@ def _parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
-    p.add_argument("--dst", help="output root (meshes, skeletons, fragments, DB)")
+    p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
+                                 "meshes/skeletons inside it. Local path or s3://... "
+                                 "NOTE this used to mean the run root; bookkeeping "
+                                 "now goes to --work-dir")
+    p.add_argument("--work-dir", help="run directory: stage-1 fragments, manifests, "
+                                      "metrics DB, failures, run summary. Must be a "
+                                      "filesystem path. Defaults to the PARENT of a "
+                                      "local --dst (reproducing the old layout); "
+                                      "required when --dst is remote")
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
@@ -109,6 +132,14 @@ def _parse_args(argv=None):
     return p.parse_args(argv)
 
 
+def _ng_source(volume_dir: str) -> str:
+    """The neuroglancer source URL for a volume — local paths need a file:// prefix."""
+    from em_volume_tools import is_local
+
+    return (f"precomputed://file://{volume_dir}" if is_local(volume_dir)
+            else f"precomputed://{volume_dir}")
+
+
 def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
     """How many blocks a stage will actually process — the honest size estimate.
 
@@ -142,6 +173,25 @@ def main(argv=None) -> int:
         return 0
     if not args.dst:
         raise SystemExit("--dst is required unless --describe")
+
+    # --dst is the volume (possibly s3://); --work-dir is the POSIX run dir. For a
+    # local --dst the work dir defaults to its parent, which reproduces the layout
+    # from when --dst meant the run root: <run>/segmentation plus <run>/chunked,
+    # metrics.db and the manifests beside it.
+    from em_volume_tools import is_local
+
+    dst = args.dst.rstrip("/")
+    if args.work_dir:
+        work = args.work_dir.rstrip("/")
+    elif is_local(dst):
+        work = os.path.dirname(os.path.abspath(dst))
+    else:
+        raise SystemExit(
+            f"--work-dir is required when --dst is remote ({dst}). It holds the "
+            "stage-1 fragments, the sqlite metrics DB and the JSONL manifests, "
+            "none of which work over an object store.")
+    if not is_local(work):
+        raise SystemExit(f"--work-dir must be a filesystem path, got {work}")
 
     stages = [s.strip() for s in args.stages.split(",") if s.strip()]
     unknown = set(stages) - set(STAGES)
@@ -185,10 +235,9 @@ def main(argv=None) -> int:
         occ_spec = scale_spec(args.src, occ.index)
         occ_voxel = occ.voxel_size
 
-    dst = args.dst.rstrip("/")
-    db_path = None if args.no_metrics_db else f"{dst}/metrics.db"
-    allowlist_path = args.allowlist or f"{dst}/allowlist.csv"
-    out = OutputConfig(dst=dst)
+    db_path = None if args.no_metrics_db else f"{work}/metrics.db"
+    allowlist_path = args.allowlist or f"{work}/allowlist.csv"
+    out = OutputConfig(dst=dst, work_dir=work)
 
     occ = None
     if occ_spec is not None:
@@ -198,23 +247,44 @@ def main(argv=None) -> int:
                occ_voxel, args.occupancy_dilate)
 
     log.info("source pyramid:\n%s", describe(args.src))
-    log.info("index  scale %d  voxel %s nm  shape %s  -> %d blocks",
-             idx_s.index, idx_s.voxel_size, idx_s.shape,
-             _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ))
-    log.info("mesh   scale %d  voxel %s nm  shape %s  -> %d blocks",
-             mesh_s.index, mesh_s.voxel_size, mesh_s.shape,
-             _blocks_in(mesh_s.shape, block, roi_mesh, mesh_s.voxel_size, occ))
-    log.info("skel   scale %d  voxel %s nm  shape %s  -> %d blocks",
-             skel_s.index, skel_s.voxel_size, skel_s.shape,
-             _blocks_in(skel_s.shape, block, roi_skel, skel_s.voxel_size, occ))
-    log.info("stages=%s roi=%s occupancy=%s dst=%s", stages, roi_base,
+    # Keep the counts: they are the denominators scripts/run_progress.py needs, and
+    # recomputing them means re-reading the occupancy array.
+    planned = {
+        "index": _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ),
+        "mesh": _blocks_in(mesh_s.shape, block, roi_mesh, mesh_s.voxel_size, occ),
+        "skel": _blocks_in(skel_s.shape, block, roi_skel, skel_s.voxel_size, occ),
+    }
+    for name, s in (("index", idx_s), ("mesh", mesh_s), ("skel", skel_s)):
+        log.info("%-5s  scale %d  voxel %s nm  shape %s  -> %d blocks",
+                 name, s.index, s.voxel_size, s.shape, planned[name])
+    log.info("stages=%s roi=%s occupancy=%s", stages, roi_base,
              f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
-             if occ else "off", dst)
+             if occ else "off")
+    log.info("dst (volume)  = %s", dst)
+    log.info("work dir      = %s", work)
     if args.dry_run:
         log.info("--dry-run: nothing executed")
         return 0
 
-    os.makedirs(dst, exist_ok=True)
+    os.makedirs(work, exist_ok=True)
+    # The plan, so progress can be reported as a fraction without re-deriving the
+    # ROI ∩ occupancy block counts (which costs an occupancy-array read).
+    with open(f"{work}/run_plan.json", "w") as f:
+        json.dump({
+            "started": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "command": " ".join(sys.argv),
+            "dst": dst, "work_dir": work, "stages": stages,
+            "block_shape": list(block), "roi": list(roi_base) if roi_base else None,
+            "scales": {"index": idx_s.index, "mesh": mesh_s.index, "skel": skel_s.index},
+            "planned_blocks": planned,
+            "seg_scales": [
+                {"scale": c["scale"], "shape": list(c["shape"]),
+                 "blocks": math.prod(-(-c["shape"][a] // SEG_COPY_BLOCK[a])
+                                     for a in range(3))}
+                for c in scale_cost(args.src, roi_mesh, mesh_s.voxel_size,
+                                    block_shape=block, scale_indices=seg_scales)
+            ] if "seg" in stages else [],
+        }, f, indent=2)
     t_start = time.time()
     mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=block)
     skel_cfg = SkeletonConfig(skeleton_scale=skel_s.index, block_shape=block,
@@ -235,7 +305,7 @@ def main(argv=None) -> int:
                 args.src, out.volume_dir(), roi=roi_mesh,
                 roi_voxel_size=mesh_s.voxel_size, scale_indices=seg_scales,
                 block_shape=block, encoding=args.seg_encoding,
-                progress_path=f"{dst}/progress.seg.jsonl",
+                progress_path=f"{work}/progress.seg.jsonl",
                 client=client, resume=resume)
             timing["seg"] = (time.time() - t) / 60
             log.info("seg: %d scales, %.2f Gvox -> %s  (%.1f min)",
@@ -285,7 +355,7 @@ def main(argv=None) -> int:
                 allowlist=allow, roi=roi_skel,
                 occupancy_spec=occ_spec, occupancy_voxel_size=occ_voxel,
                 occupancy_dilate=args.occupancy_dilate, db_path=db_path,
-                fusion_stats_path=f"{dst}/fusion_stats.jsonl",
+                fusion_stats_path=f"{work}/fusion_stats.jsonl",
                 max_consecutive_failures=args.max_consecutive_failures,
                 client=client, resume=resume)
             timing["skel"] = (time.time() - t) / 60
@@ -302,15 +372,19 @@ def main(argv=None) -> int:
     # Point the volume info at whichever subresources now exist, so one
     # neuroglancer layer carries labels + meshes + skeletons. After the stages
     # because the seg stage rewrites info, which would drop the keys.
+    # Existence is probed via the kvstore, not os.path: vol may be an s3:// URL,
+    # and a subresource is "there" when its own info is, not when a directory is.
+    from em_volume_tools import exists as _exists
+
     vol = out.volume_dir()
     linked: dict[str, str] = {}
-    if os.path.exists(os.path.join(vol, "info")):
+    if _exists(vol, "info"):
         subs = {k: d for k, d in (("mesh", out.mesh_dir), ("skeletons", out.skeleton_dir))
-                if os.path.isdir(os.path.join(vol, d))}
+                if _exists(vol, d, "info")}
         if subs:
             linked = link_subresources(vol, **subs)
             log.info("volume info -> %s", linked)
-        log.info("neuroglancer source: precomputed://file://%s", vol)
+        log.info("neuroglancer source: %s", _ng_source(vol))
     else:
         log.warning("no volume at %s — run --stages seg to export the labels, "
                     "otherwise meshes/skeletons have no volume to attach to", vol)
@@ -335,14 +409,16 @@ def main(argv=None) -> int:
         "finished": datetime.now().astimezone().isoformat(timespec="seconds"),
         "command": " ".join(sys.argv),
         "volume": vol,
+        "work_dir": work,
+        "neuroglancer_source": _ng_source(vol),
         "linked_subresources": linked,
         "n_failed_bodies": n_failed,
         "stages": {k: dict(v) for k, v in summaries.items()},
     }
-    with open(f"{dst}/run_summary.json", "w") as f:
+    with open(f"{work}/run_summary.json", "w") as f:
         json.dump(summary, f, indent=2, default=str)
     log.info("timing (min): %s", summary["timing_min"])
-    log.info("done -> %s", f"{dst}/run_summary.json")
+    log.info("done -> %s", f"{work}/run_summary.json")
     return 1 if n_failed else 0
 
 
