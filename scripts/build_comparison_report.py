@@ -1,0 +1,295 @@
+#!/usr/bin/env python
+"""Build the HTML skeletonization comparison report from the benchmark figures.
+
+Two output modes:
+
+    python scripts/build_comparison_report.py
+        -> docs/skeletonization-comparison.html referencing docs/images/*.png.
+           Git-friendly (no base64 in a tracked text file) and opens locally.
+
+    python scripts/build_comparison_report.py --embed -o /tmp/standalone.html
+        -> one self-contained file with images inlined as data URIs, for sharing
+           or publishing where relative paths won't resolve.
+
+The numbers below are transcribed from the 2026-07-30 run and match
+``docs/skeletonization-comparison.md``. They are hard-coded rather than recomputed
+because the masks are large and live outside the repo; when step 0 of
+``docs/skeletonization-plan.md`` widens the benchmark, generate them with
+``em_seg_morpho.skelmetrics.score`` and replace ROWS wholesale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import pathlib
+
+REPO = pathlib.Path(__file__).resolve().parent.parent
+IMAGES = REPO / "docs" / "images"
+
+FIGS = {
+    "nucleated": "fig_6308993.png",
+    "small": "fig_18052382.png",
+    "thickness": "fig_6308993_thickness.png",
+}
+
+# (tool, setting, nodes, fill %, spill %, max radius nm, wall time)
+ROWS = {
+    18052382: [
+        ("NeuTu", "minlen=2", 2193, 78, 14, 442, "1.6 s"),
+        ("NeuTu", "minlen=10", 1759, 68, 14, 442, "1.3 s"),
+        ("NeuTu", "minlen=40", 1329, 50, 14, 442, "1.3 s"),
+        ("kimimaro", "production — scale 1.5, const 150 nm", 4417, 68, 8, 317, "25 s"),
+        ("kimimaro", "relaxed — scale 1.0, const 2 vox", 10177, 89, 13, 317, "231 s"),
+    ],
+    6308993: [
+        ("NeuTu", "minlen=10", 1431, 73, 11, 543, "16 s"),
+        ("kimimaro", "production — scale 1.5, const 150 nm", 5705, 39, 4, 345, "~9 min"),
+    ],
+}
+BEST = {18052382: 89, 6308993: 73}
+
+
+def table(body: int) -> str:
+    out = ['<div class="tw"><table><thead><tr><th>Tool</th><th>Setting</th>'
+           '<th class="n">Nodes</th><th class="n">Fills</th><th class="n">Spill</th>'
+           '<th class="n">Max radius</th><th class="n">Time</th></tr></thead><tbody>']
+    for tool, setting, n, fill, sp, mr, t in ROWS[body]:
+        hi = ' class="hi"' if fill == BEST[body] else ""
+        out.append(
+            f'<tr{hi}><td><span class="tool {tool.lower()}">{tool}</span></td>'
+            f'<td class="set">{setting}</td><td class="n">{n:,}</td>'
+            f'<td class="n strong">{fill}%</td><td class="n">{sp}%</td>'
+            f'<td class="n">{mr} nm</td><td class="n dim">{t}</td></tr>')
+    return "\n".join(out) + "</tbody></table></div>"
+
+
+def src(key: str, embed: bool) -> str:
+    p = IMAGES / FIGS[key]
+    if embed:
+        return "data:image/png;base64," + base64.b64encode(p.read_bytes()).decode()
+    return f"images/{FIGS[key]}"
+
+
+CSS = """
+:root{--ground:#fbfbfc;--surface:#fff;--ink:#14161a;--ink2:#545a63;--rule:#e3e5ea;
+--accent:#2a78d6;--rust:#b4531f;--hi:#eef4fd;
+--display:Georgia,'Iowan Old Style','Source Serif 4',serif;
+--body:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){
+--ground:#14161a;--surface:#1c1f24;--ink:#f1f2f5;--ink2:#a5abb5;--rule:#2c3037;
+--accent:#6aa5ee;--rust:#e0925f;--hi:#1d2530}}
+:root[data-theme="dark"]{--ground:#14161a;--surface:#1c1f24;--ink:#f1f2f5;
+--ink2:#a5abb5;--rule:#2c3037;--accent:#6aa5ee;--rust:#e0925f;--hi:#1d2530}
+:root[data-theme="light"]{--ground:#fbfbfc;--surface:#fff;--ink:#14161a;
+--ink2:#545a63;--rule:#e3e5ea;--accent:#2a78d6;--rust:#b4531f;--hi:#eef4fd}
+body{background:var(--ground);color:var(--ink);font-family:var(--body);
+line-height:1.62;font-size:16.5px;margin:0;padding:0 24px 88px}
+.wrap{max-width:1340px;margin:0 auto;display:flex;flex-direction:column;gap:30px}
+.col{max-width:68ch}
+header{padding:56px 0 8px;border-bottom:1px solid var(--rule);display:flex;
+flex-direction:column;gap:12px}
+h1{font-family:var(--display);font-weight:600;font-size:2.15rem;line-height:1.2;
+margin:0;text-wrap:balance;letter-spacing:-.01em}
+h2{font-family:var(--display);font-weight:600;font-size:1.42rem;margin:0 0 4px;
+text-wrap:balance}
+h3{font-size:.79rem;text-transform:uppercase;letter-spacing:.09em;color:var(--ink2);
+font-weight:650;margin:0 0 6px}
+p{margin:0 0 14px}.lede{font-size:1.08rem;color:var(--ink2)}
+.meta{font-family:var(--mono);font-size:.8rem;color:var(--ink2)}
+section{display:flex;flex-direction:column;gap:14px}
+code{font-family:var(--mono);font-size:.88em;background:var(--hi);padding:1px 5px;
+border-radius:3px}
+.note{border-left:3px solid var(--rust);padding:2px 0 2px 18px}
+.note h3{color:var(--rust)}
+figure{margin:0;background:#fff;border:1px solid var(--rule);border-radius:6px;
+padding:14px;overflow-x:auto}
+figure img{display:block;width:100%;min-width:900px;height:auto}
+figcaption{font-size:.86rem;color:var(--ink2);margin-top:12px;max-width:76ch}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:640px}
+th,td{text-align:left;padding:9px 14px 9px 0;border-bottom:1px solid var(--rule)}
+th{font-size:.75rem;text-transform:uppercase;letter-spacing:.07em;color:var(--ink2);
+font-weight:650}
+.n{text-align:right;font-variant-numeric:tabular-nums;font-family:var(--mono);
+font-size:.88rem;padding-right:0;padding-left:18px}
+td.n{white-space:nowrap}.strong{font-weight:650}.dim{color:var(--ink2)}
+.set{color:var(--ink2);font-size:.88rem}
+tr.hi{background:var(--hi)}.tool{font-weight:650}.tool.neutu{color:var(--accent)}
+ul{margin:0;padding-left:20px}li{margin-bottom:8px}
+.paths{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(270px,1fr))}
+.path{background:var(--surface);border:1px solid var(--rule);border-radius:6px;
+padding:18px 20px;display:flex;flex-direction:column;gap:7px}
+.path h4{margin:0;font-size:1rem;font-family:var(--display);font-weight:650}
+.path p{margin:0;font-size:.9rem;color:var(--ink2)}
+.verdict{font-family:var(--mono);font-size:.78rem;letter-spacing:.03em;
+text-transform:uppercase;color:var(--accent);font-weight:650}
+"""
+
+
+def build(embed: bool) -> str:
+    return f"""<title>Skeleton + radius: NeuTu vs kimimaro on two wasp neurons</title>
+<style>{CSS}</style>
+<div class="wrap">
+<header>
+  <div class="meta">specimen 3 · scale 2 · 32 nm/voxel · measured 2026-07-30</div>
+  <h1>Skeletons and vertex radii: NeuTu vs kimimaro</h1>
+  <p class="lede col">Two wasp neurons, identical input masks, both tools scored on the
+  same question — if you render the SWC as a tapered tube, how much of the segment does
+  it actually fill?</p>
+</header>
+
+<section class="col">
+  <h2>What "correct" means here</h2>
+  <p><strong>Fill, not inscribe.</strong> These segmentations are imperfect, so the mask
+  is <em>not</em> ground truth and agreement with its distance transform is not the
+  target. The operative definition of a good radius is the one that makes the rendered
+  tube fill the segment, because the goal is good-enough visualization.</p>
+  <p>That definition is pragmatic rather than rigorous — there is no calibrated notion of
+  correctness behind it, and it is the <em>wrong</em> definition if these radii are ever
+  reused for volume or surface-area measurement. Say which one you mean before optimising
+  against either.</p>
+</section>
+
+<section class="col note">
+  <h3>Correction to an earlier version of these numbers</h3>
+  <p>The first pass stamped <em>isolated spheres at each vertex</em>. Real SWC viewers draw
+  connected frusta between parent and child, so that measurement penalised any method
+  placing sparse nodes — and NeuTu places roughly a third as many. Re-scored with a swept
+  capsule along every edge, <strong>the ranking reverses</strong>. Everything below uses
+  the corrected metric.</p>
+</section>
+
+<section class="col">
+  <h2>What the numbers say</h2>
+  <p><strong>Fills</strong> is the share of segment voxels inside the rendered tube.
+  <strong>Spill</strong> is the share of tube sitting outside the segment. Neither reaches
+  100% for anyone: a chain of circular cross-sections cannot fill an irregular one. Read
+  these against each other, not against perfection.</p>
+</section>
+
+<section>
+  <h3>Body 18052382 — 206,659 voxels, no soma</h3>
+  {table(18052382)}
+</section>
+
+<section>
+  <h3>Body 6308993 — 1,016,526 voxels, nucleated</h3>
+  {table(6308993)}
+  <p class="col" style="margin-top:6px">On the larger arbor the gap is stark: NeuTu fills
+  <strong>73%</strong> with 1,431 nodes where kimimaro at production settings fills
+  <strong>39%</strong> with 5,705. Nearly twice the fill from a quarter of the nodes —
+  <strong>1.9 nodes per 1,000 covered voxels against 14.3</strong>.</p>
+</section>
+
+<section>
+  <h2 class="col">The nucleated neuron</h2>
+  <figure>
+    <img src="{src('nucleated', embed)}" alt="Comparison for body 6308993: segment thickness, then skeleton coloured by vertex radius, rendered tube versus segment, and a single z-slice, for NeuTu and kimimaro.">
+    <figcaption><strong>Grey is the segment; blue is the skeleton rendered as a tube.</strong>
+    Grey showing through means the tube didn't fill it; blue outside grey is spill. The
+    right-hand column is one z-slice, which is where radius behaviour is easiest to see —
+    NeuTu's circle fills the left blob almost exactly, kimimaro's leaves a grey rim all the
+    way round because the exact inscribed radius under-fills any cross-section that isn't
+    circular.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2 class="col">The smaller arbor, across settings</h2>
+  <figure>
+    <img src="{src('small', embed)}" alt="Four-row comparison for body 18052382 across NeuTu at two pruning thresholds and kimimaro at two invalidation settings.">
+    <figcaption>Bottom row shows what relaxing kimimaro's invalidation buys: fill climbs to
+    89%, the best result anywhere in this test — but at 10,177 nodes and 231 seconds, and
+    the skeleton visibly frays into hair-like spurs that would read as noise in a
+    rendering.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2 class="col">Judge the segmentation first</h2>
+  <p class="col">Tool-independent — the largest sphere that fits at each point in the mask.
+  Every radius either tool can report is bounded by it.</p>
+  <figure>
+    <img src="{src('thickness', embed)}" alt="Local thickness map of body 6308993 with a zoom on the thickest region.">
+    <figcaption>Body 6308993. The nucleus is part of the segment, not a cavity — but the
+    soma region still carries no thick core: the largest sphere fitting anywhere in this
+    mask has a 345 nm radius. No skeletonizer can recover a radius the distance transform
+    doesn't contain, so check this panel before attributing a bad radius to the
+    skeletonizer.</figcaption>
+  </figure>
+</section>
+
+<section class="col">
+  <h2>The two radius conventions</h2>
+  <p>kimimaro sets <code>radii = DBF[vertex]</code> — the exact inscribed radius. Correct
+  at the node, and systematically small wherever a cross-section isn't round. NeuTu's are
+  larger, which fills better. That is the entire radius story, and under the fill
+  definition above it favours NeuTu.</p>
+  <p>The counterweight: NeuTu reports a <strong>543 nm</strong> max radius on body 6308993
+  where the largest sphere fitting anywhere in that mask is <strong>345 nm</strong>, and
+  ~13% of its nodes sit more than 2 voxels above the local distance-transform value. That
+  is invisible in a rendering and disqualifying in a measurement.</p>
+</section>
+
+<section>
+  <h2 class="col">Three paths</h2>
+  <div class="paths">
+    <div class="path">
+      <div class="verdict">Best fill per node</div>
+      <h4>Reimplement NeuTu's method</h4>
+      <p>Mostly parameterization, not a rewrite: one line for the cost field, zero for
+      invalidation, one for radii, plus post-processing. The Dijkstra stays in C++ via
+      <code>dijkstra3d</code>. The preferred route.</p>
+    </div>
+    <div class="path">
+      <div class="verdict">No new code</div>
+      <h4>kimimaro, relaxed invalidation</h4>
+      <p>89% fill on the small body from a one-line config change. Costs 2.3× the nodes,
+      9× the runtime, and a frayed skeleton that would need tick pruning.</p>
+    </div>
+    <div class="path">
+      <div class="verdict">Fallback</div>
+      <h4>NeuTu as a plugin stage</h4>
+      <p>Shell out to the built binary from its own environment. Ready in
+      <code>em_seg_morpho.neutu_io.run_neutu</code>. Costs a GPL binary out of process and
+      a second conda environment.</p>
+    </div>
+  </div>
+</section>
+
+<section class="col">
+  <h2>What this does and doesn't establish</h2>
+  <ul>
+    <li><strong>Two bodies, one specimen.</strong> Both thin-process arbors, median
+    diameter 110–140 nm. Nothing here is tested on genuinely thick structure.</li>
+    <li><strong>No ground truth.</strong> Everything is scored against imperfect masks.</li>
+    <li><strong>The ranking already reversed once</strong>, when a modelling error in the
+    metric was fixed. Provisional until the benchmark is wider.</li>
+    <li><strong>kimimaro relaxed was never run on body 6308993</strong> — production alone
+    took ~9 min on that 449 M-voxel bounding box.</li>
+  </ul>
+  <p style="margin-top:6px">Full write-up: <code>docs/skeletonization-comparison.md</code>.
+  Plan: <code>docs/skeletonization-plan.md</code>. Regenerate this page with
+  <code>scripts/build_comparison_report.py</code>.</p>
+</section>
+</div>
+"""
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--embed", action="store_true",
+                    help="inline images as data URIs (self-contained, ~1 MB)")
+    ap.add_argument("-o", "--out", default=None)
+    a = ap.parse_args()
+    out = pathlib.Path(a.out) if a.out else REPO / "docs" / "skeletonization-comparison.html"
+    html = build(a.embed)
+    out.write_text(html)
+    print(f"wrote {out}  ({len(html)/1e6:.2f} MB, embed={a.embed})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
