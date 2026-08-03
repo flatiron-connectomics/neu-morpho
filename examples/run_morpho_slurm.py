@@ -101,10 +101,12 @@ def _parse_args(argv=None):
     p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
     p.add_argument("--mesh-scale", type=int, default=2)
     p.add_argument("--skel-scale", type=int, default=2)
-    p.add_argument("--tracer", default="kimimaro", choices=("kimimaro", "neutu"),
-                   help="stage-1 skeletonizer. 'neutu' is em_seg_morpho.neutu_trace, "
-                        "which reproduces NeuTu's skeletons at ~2.6x fewer vertices "
-                        "but ~1.7x the per-block time (see docs/skeletonization-plan.md)")
+    p.add_argument("--tracer", default="neutu", choices=("kimimaro", "neutu"),
+                   help="stage-1 skeletonizer (default neutu). 'neutu' is "
+                        "em_seg_morpho.neutu_trace, which reproduces NeuTu's skeletons "
+                        "at ~2.6x fewer vertices but ~1.7x the per-block time, and "
+                        "requires isotropic voxels; 'kimimaro' is the older tracer "
+                        "(see docs/skeletonization-plan.md)")
     p.add_argument("--neutu-cost", default="voxel", choices=("voxel", "edge"),
                    help="--tracer neutu only: 'edge' applies NeuTu's symmetric edge "
                         "cost and agrees with NeuTu more closely, but its memory was "

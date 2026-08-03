@@ -61,11 +61,22 @@ class SkeletonConfig:
     fixed, bounded array.
     """
 
-    # Which tracer stage 1 uses. "kimimaro" is what has shipped; "neutu" is
-    # em_seg_morpho.neutu_trace, which reproduces NeuTu's skeletons (tips 1.00x,
-    # cable ~1.05x, sub-voxel centreline agreement) at ~2x fewer nodes and ~10x
-    # faster than kimimaro production. See docs/skeletonization-plan.md.
-    tracer: str = "kimimaro"
+    # Which tracer stage 1 uses. "neutu" is em_seg_morpho.neutu_trace, which
+    # reproduces NeuTu's skeletons (tips 1.01x, cable 1.04-1.05x, identical branch
+    # topology, sub-voxel centreline agreement, exact inscribed radii) at ~2.6x
+    # fewer vertices; "kimimaro" is what shipped before and remains available.
+    # See docs/skeletonization-plan.md.
+    #
+    # It is the default because NeuTu's node placement and radii were the point of
+    # the exercise, and it drops less cable to postprocessing on real data (0.033 vs
+    # 0.091 dropped_cable_fraction over a 30-block ROI, 6,079 bodies). Two costs
+    # come with it, both deliberate:
+    #   - ~1.7x the per-block time (kimimaro's C++ inner loop vs this one's numpy).
+    #   - It REQUIRES ISOTROPIC voxels and raises otherwise, because its cost
+    #     1/(1+r^2) is not scale-invariant (see neutu_trace's UNIT TRAP). sample3
+    #     is isotropic at every scale; an anisotropic pyramid must pass
+    #     tracer="kimimaro" explicitly. It fails loudly, not silently.
+    tracer: str = "neutu"
 
     # --- "neutu" tracer only, in VOXELS -------------------------------------
     # neutu_trace works in voxels on purpose: its cost 1/(1+r^2) is not

@@ -8,6 +8,34 @@ from em_seg_morpho import skeleton
 from em_seg_morpho.config import SkeletonConfig
 
 
+def test_default_tracer_is_neutu():
+    """Pin the default: which tracer runs by default is a decision, not an accident.
+
+    Every other test here passes ``tracer=`` explicitly, so nothing else would
+    notice this flipping — and the two tracers produce different skeletons.
+    """
+    assert SkeletonConfig().tracer == "neutu"
+    assert SkeletonConfig().neutu_cost == "voxel"
+
+
+def test_driver_default_tracer_matches_the_config_default():
+    """The driver always passes --tracer explicitly, so the two can drift apart.
+
+    If they do, ``SkeletonConfig()`` and a bare driver invocation quietly produce
+    different skeletons from the same command.
+    """
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "examples" / "run_morpho_slurm.py"
+    spec = importlib.util.spec_from_file_location("_driver_for_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    args = mod._parse_args(["--src", "x", "--dst", "y", "--work-dir", "z"])
+    assert args.tracer == SkeletonConfig().tracer
+    assert args.neutu_cost == SkeletonConfig().neutu_cost
+
+
 def _two_body_block(n=48, r=4):
     """One block holding two labelled tubes."""
     m = np.zeros((n, n, n), dtype=np.uint64)

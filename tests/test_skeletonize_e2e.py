@@ -79,13 +79,47 @@ def test_skeletonize_end_to_end(tmp_path):
     assert 300 <= bz.min() and bz.max() <= 400  # block 1: z voxels 40..48 -> 320..376 nm
 
 
+def test_tick_removal_runs_after_the_seam_join(tmp_path):
+    """Order invariant: postprocess must join fragments BEFORE dropping short branches.
+
+    ``fix_borders`` makes a fragment reach the seam via a short mandatory spur off its
+    trunk whenever the trunk's own endpoint is elsewhere. That spur is exactly what a
+    tick filter targets — so if tick removal ever ran first, it would amputate the
+    reaching branches and the body would fuse into disconnected block-length stubs
+    while every status still read "written". Nothing else here would notice: the
+    default ``postprocess_tick_nm`` is 500 nm and ``_cfg`` turns it off.
+    """
+    cfg = replace(_cfg(), postprocess_tick_nm=500.0)
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
+    summary = skeletonize_segments(src, out, cfg, db_path=None, client=None)
+
+    rod = _load(summary["out_dir"], 7)
+    assert len(rod.components()) == 1, "tick removal broke the seam"
+    z = rod.vertices[:, 2]
+    assert z.min() <= 8 and z.max() >= 744      # still spans all three blocks
+
+
 def test_metrics_land_in_db(tmp_path):
+    """Topology of the fused rod reaches the DB — with tick removal ON.
+
+    ``_cfg`` disables postprocessing so the other tests can see raw geometry, but an
+    "unbranched rod" claim only survives that for a tracer whose main path happens to
+    end exactly on the face centre. ``fix_borders`` makes the centre of each contact
+    area a *mandatory* target, so when the natural TEASAR extremum is elsewhere — for
+    a square cross-section it is the corner, maximally far — the fragment carries a
+    1-voxel spur from its trunk out to the seam point. That is the mechanism working,
+    not failing: the seam join runs BEFORE tick removal, so the spur does its job and
+    is then cleaned up. Production removes 94k of them over a 30-block ROI, 3.2% of
+    cable. Assert against that order, not against postprocessing being off.
+    """
     from em_seg_morpho.metrics_db import MetricsDB
 
+    cfg = replace(_cfg(), postprocess_tick_nm=500.0)
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
-    skeletonize_segments(src, out, _cfg(), db_path=db_path, client=None)
+    skeletonize_segments(src, out, cfg, db_path=db_path, client=None)
 
     db = MetricsDB(db_path)
     row = db.con.execute(

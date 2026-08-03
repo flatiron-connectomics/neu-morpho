@@ -17,8 +17,14 @@ as wrong.
 
 Sub-voxel centreline agreement and matched branching, from **NeuTu's own
 `scale=1, const=2, minimalLength=10`** — no tuned constant, no target-selection
-rewrite. Against kimimaro production, what ships today, roughly **2× fewer nodes
-and 10× faster**.
+rewrite. Against kimimaro production it is ~**2.6× fewer vertices** but ~**1.7× the
+per-block time**; the "10× faster" figure from an earlier revision was whole-body
+only and does not hold in block mode, which is the mode that ships.
+
+**It is now the default** — `SkeletonConfig.tracer = "neutu"`, driver `--tracer neutu`
+— after visual inspection of a 30-block ROI (6,079 bodies) and the measurements in
+"It runs at production scale" below. `tracer="kimimaro"` stays available and is
+**required for anisotropic pyramids**, which neutu rejects outright.
 
 **Two withdrawn conclusions**, both from this branch, both worth reading before
 trusting any number here:
@@ -623,6 +629,37 @@ the label pyramid, which at scale 0 is 32.2 Gvox / 258 GB raw for this ROI. It i
 every one from ceph and has nothing to do with skeletonization — the log line
 `seg scale 0 ( 8 nm)` is the copy, while skeletonization is whatever `skel scale N`
 says.
+
+### `fix_borders` costs one spur per block face, and the postprocess order pays for it
+
+Found when the default flipped and a synthetic straight-rod test started reporting 6
+branch points. It is the mechanism working, and worth knowing before reading a tick
+count as waste.
+
+`fix_borders` makes the **centre of each face-contact area** a mandatory target, so
+both blocks sharing a face route to the same point and their fragments meet. But
+TEASAR's own extremum on that face need not *be* that centre — on the test's 4×4
+square cross-section it is the corner, maximally far — so the fragment carries a short
+spur from its trunk out to the seam point. Per block face, per body. On a 4×4 rod:
+
+| | verts | branches | tips | cable |
+|---|---:|---:|---:|---:|
+| kimimaro | 96 | 0 | 2 | 760 nm |
+| neutu, `tick=0` | 48 | 6 | 8 | 936 nm |
+| neutu, `tick=500` (production) | 42 | **0** | **2** | 845 nm |
+
+**The load-bearing part is the order: `fuse_body` joins seams BEFORE removing ticks.**
+The spur is exactly what a tick filter targets, so reversing those two would amputate
+every reaching branch and fuse a body into disconnected block-length stubs — while
+every block's status still read `written`. Pinned by
+`test_tick_removal_runs_after_the_seam_join`.
+
+So a large `tick_branches_removed` is expected, not alarming: 94,397 over the 30-block
+ROI, and a good share are these. Two consequences for reading numbers: per-block
+fragment cable is slightly inflated before postprocessing, and the residual 845 vs 760
+nm above is the square cross-section having no unique centreline (the path alternates
+between the 2×2 axial core), not a tracing error — round real cross-sections do not
+have it.
 
 ### Two decisions to carry into the tracer swap
 
