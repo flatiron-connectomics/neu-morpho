@@ -61,6 +61,23 @@ class SkeletonConfig:
     fixed, bounded array.
     """
 
+    # Which tracer stage 1 uses. "kimimaro" is what has shipped; "neutu" is
+    # em_seg_morpho.neutu_trace, which reproduces NeuTu's skeletons (tips 1.00x,
+    # cable ~1.05x, sub-voxel centreline agreement) at ~2x fewer nodes and ~10x
+    # faster than kimimaro production. See docs/skeletonization-plan.md.
+    tracer: str = "kimimaro"
+
+    # --- "neutu" tracer only, in VOXELS -------------------------------------
+    # neutu_trace works in voxels on purpose: its cost 1/(1+r^2) is not
+    # scale-invariant, so a DBF in nm silently changes the skeleton (see that
+    # module's UNIT TRAP). These are NeuTu's own values; `scale`/`const` below are
+    # kimimaro's and are in nm, so the two sets are deliberately separate rather
+    # than one being converted into the other.
+    neutu_scale: float = 1.0
+    neutu_const_vox: float = 2.0
+    neutu_min_length_vox: float = 10.0
+    neutu_simplify: bool = True        # region_sample + optimal_downsample
+
     anisotropy: tuple[float, float, float] = (8.0, 8.0, 8.0)   # (z, y, x) nm at skeleton_scale
     skeleton_scale: int = 2
     block_shape: tuple[int, int, int] = (256, 256, 256)        # block size at skeleton_scale

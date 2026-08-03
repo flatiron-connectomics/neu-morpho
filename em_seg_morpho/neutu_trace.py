@@ -162,8 +162,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 const: float | None = None, min_length: float = MIN_LENGTH,
                 patience: int | None = PATIENCE, cost: str = COST,
                 attach_at_skeleton: bool = ATTACH_AT_SKELETON,
-                fix_borders: bool = False, dust_threshold: int = 0,
-                connectivity: int = 26, max_paths=None):
+                fix_borders: bool = False, face_targets=None,
+                dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
     Returns an ``osteoid.Skeleton`` whose ``vertices`` are zyx voxel coordinates
@@ -203,7 +203,18 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
     # Border targets must be found on the ARRAY's faces, before per-component
     # cropping moves them. In block mode the array is the block, so these are the
     # block faces -- which is the point.
-    borders = border_targets(cc) if fix_borders else {}
+    if face_targets is not None:
+        # Caller already found them, in this array's coordinates. The block path does
+        # this: deriving them here costs a full-array pass PER LABEL, and a 256^3
+        # block holds ~1000 allowlisted labels.
+        ft = np.asarray(face_targets, dtype=np.int64).reshape(-1, 3)
+        borders = {}
+        if len(ft):
+            owners = cc[ft[:, 0], ft[:, 1], ft[:, 2]]
+            for lab in np.unique(owners[owners > 0]):
+                borders[int(lab)] = ft[owners == lab]
+    else:
+        borders = border_targets(cc) if fix_borders else {}
 
     pieces = []
     for label in range(1, n_comp + 1):
