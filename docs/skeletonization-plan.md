@@ -394,11 +394,35 @@ What does differ, in decreasing order of suspicion:
    point from `first_label`, an arbitrary voxel. Both land on an extremal tip, but
    not the same one — and the root determines the whole parent tree, hence every
    path. Small code change, plausibly large effect.
-2. **Edge form.** NeuTu's cost is symmetric over the edge; `parental_field` takes a
-   per-voxel field. `test_per_voxel_weights_match_neutu_edge_cost` shows they give
-   bit-identical paths on straight and bent tubes, but a tube is where they *should*
-   agree. Untested where it matters: inside a convoluted bulb. Measurable with the
-   slow reference Dijkstra already in that test file, on a bulb sub-crop.
+2. **Edge form — MEASURED, and it does matter.** NeuTu's cost is symmetric over the
+   edge; `parental_field` takes a per-voxel field. On tubes they are bit-identical,
+   which is what `test_per_voxel_weights_match_neutu_edge_cost` asserts — but a tube
+   is precisely where they must agree, since one route dominates. Inside real bulbs
+   (61³ crops on the two thick bodies, 16 root→target pairs against the slow
+   reference Dijkstra):
+
+   | | tubes | bulbs |
+   |---|---|---|
+   | identical paths | bit-identical | **0 / 16** |
+   | our cost ÷ NeuTu's optimum | 1.000000 | **median 1.10, max 1.13** |
+   | max deviation from reference route | 0 | **up to 12.1 voxels** |
+
+   The two costs differ *only* through mixed 3D step lengths:
+   `Σ dᵢ(fᵢ + fᵢ₊₁)` telescopes to `2·Σ dᵢfᵢ₊₁` plus fixed endpoint terms **when all
+   steps are equal**. With 1, √2 and √3 interleaved it does not, and where routes are
+   near-equal that flips the winner. So the tube test proves less than it appears to
+   — do not read it as validating the substitution in general.
+
+   Caveat on scope: both crops landed at occupancy 1.00, i.e. *solid* thick cores,
+   not the convoluted tufts where the figure shows disagreement. A crop in a
+   convoluted region is still owed before claiming this covers the tufts.
+
+   **Fixing it needs an edge-weighted Dijkstra, which `dijkstra3d` cannot do** — all
+   its entry points take a per-voxel `data` field. `scipy.sparse.csgraph.dijkstra`
+   can, with `return_predecessors=True`: build the 26-connected graph over the
+   component explicitly with weights `d·(f(u)+f(v))`. For a 10⁶-voxel component that
+   is ~26M edges, roughly 320 MB in CSR — affordable, C-implemented, and **no new
+   build dependency**, so still no case for Cython.
 3. **Distance-map quantisation.** NeuTu's is uint16 *integer squared* distance; we
    square a float EDT. At bulb radii (r≈10, r²≈100) that is ~1% relative, so this
    is the weakest candidate — but it is a one-line experiment.
