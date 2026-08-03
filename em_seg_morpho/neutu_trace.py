@@ -107,24 +107,10 @@ MIN_LENGTH = 10.0
 #     body 16104493   2.17 -> 17.03
 #     body 45813451   3.11 -> 14.05
 #
-# So this defaults to OFF. `select="uninvalidated"` has its own, sound, stop.
+# So this defaults to OFF. The un-invalidated-length selector that would make
+# it sound was implemented, measured not to help, and removed; the numbers and
+# the method are in docs/skeletonization-plan.md and commit 83d1356.
 PATIENCE = None
-
-# Target selection. "daf" takes the farthest still-valid voxel from the root
-# (kimimaro's CachedTargetFinder). "uninvalidated" is NeuTu's real rule — the
-# boundary voxel whose not-yet-invalidated tail is longest, stopping once the best
-# remaining is shorter than min_length.
-#
-# The default is "daf" because measured over the 12-body benchmark neither
-# dominates and "daf" is closer on counts: tips 1.01x vs 1.22x, cable 1.07x vs
-# 1.13x, A->B 0.83 vs 0.93, B->A p90 2.44 vs 2.41. Ten of twelve bodies are
-# near-identical. On the two bulb-heavy bodies "uninvalidated" recovers much more
-# of NeuTu's branch structure (p90 7.5 -> 4.2) while adding ~2.7x the tips; those
-# bulbs are segmentation noise, so which is "right" is not decidable from the
-# data. See docs/skeletonization-plan.md.
-SELECT = "daf"
-
-
 def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
     """NeuTu's local path cost ``1/(1 + r²)``, on a **voxel-unit** DBF.
 
@@ -156,8 +142,8 @@ def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
 
 def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 const: float | None = None, min_length: float = MIN_LENGTH,
-                patience: int | None = PATIENCE, select: str = SELECT,
-                dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
+                patience: int | None = PATIENCE, dust_threshold: int = 0,
+                connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
     Returns an ``osteoid.Skeleton`` whose ``vertices`` are zyx voxel coordinates
@@ -209,7 +195,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
             (cc[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] == label).astype(np.uint8))
         skel = _trace_component(sub, scale=scale, const=const,
                                 min_length=min_length, patience=patience,
-                                select=select, max_paths=max_paths)
+                                max_paths=max_paths)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -222,7 +208,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
 
 
 def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
-                     patience=PATIENCE, select=SELECT, max_paths=None, dbf=None):
+                     patience=PATIENCE, max_paths=None, dbf=None):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -252,10 +238,6 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
     del DAF
 
     parents = dijkstra3d.parental_field(neutu_pdrf(DBF), root)
-
-    if select == "uninvalidated":
-        return _trace_by_uninvalidated_length(
-            labels, DBF, parents, scale, const, min_length, max_paths)
 
     paths = []
     remaining = int(np.count_nonzero(labels))
@@ -340,148 +322,6 @@ def _uninvalidated_length(path, labels):
         return 0.0
     tail = path[len(path) - n_tail:].astype(np.float64)
     return float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
-
-
-def _trace_by_uninvalidated_length(labels, DBF, parents, scale, const, min_length,
-                                   max_paths):
-    """NeuTu's real target rule: extract the branch covering the most new ground.
-
-    ``extractLongestPath`` (``gui/zspgrowparser.cpp:214``) picks the endpoint
-    maximising ``pathLength(idx, masked=True)`` — the geodesic length of the tail
-    that is not yet invalidated — and extraction **stops** once the best remaining
-    branch is shorter than ``minimalLength`` (``isPathAvailable = false``, line
-    317). The stop is sound here in a way it is not under max-DAF selection: if the
-    *best* remaining branch is too short, every remaining branch is.
-
-    The argmax is over the whole valid set each round, which is why the cheap
-    substitutes were tried first. It is affordable via pointer doubling: the
-    per-voxel geodesic length from the root is computed once, and the nearest
-    invalidated ancestor is found with ``log2(depth)`` vectorised gathers.
-    """
-    import dijkstra3d
-    import kimimaro.skeletontricks
-    from osteoid import Skeleton
-
-    from scipy import ndimage
-
-    shape = labels.shape
-    flat = labels.reshape(-1, order="F")
-
-    # Work in the component's own index space, not the crop's. The parent chains
-    # never leave the component, and a crop is mostly background: on body 16104493
-    # that is 27,750 voxels instead of 2.6 million, a ~94x cut in the per-round
-    # doubling cost.
-    inside = np.flatnonzero(flat != 0)
-    if not len(inside):
-        return Skeleton()
-    pos = np.full(flat.size, -1, dtype=np.int64)
-    pos[inside] = np.arange(len(inside))
-    parent_full = decode_parents(parents)
-    parent = np.where(parent_full[inside] >= 0, pos[parent_full[inside]], -1)
-    parent[parent < 0] = -1
-    glen = _chain_length_from_root_compact(parent, inside, shape)
-
-    # NeuTu scores only BOUNDARY voxels as endpoints (`m_fgArray`, voxels adjacent
-    # to a barrier), computed once from the original object. Scoring interior
-    # voxels too invents branches it would never pick: a voxel deep inside a bulb
-    # can have a long un-invalidated tail without being a tip of anything.
-    obj = labels != 0
-    interior = ndimage.binary_erosion(obj, ndimage.generate_binary_structure(3, 1))
-    is_boundary = (obj & ~interior).reshape(-1, order="F")[inside]
-
-    paths = []
-    if max_paths is None:
-        max_paths = len(inside)
-
-    while len(paths) < max_paths:
-        valid = flat[inside] != 0
-        if not (valid & is_boundary).any():
-            break
-        covered = _first_invalid_ancestor_length(parent, glen, valid)
-        score = np.where(valid & is_boundary, glen - covered, -np.inf)
-        best = int(np.argmax(score))
-        if not np.isfinite(score[best]) or score[best] < min_length:
-            break                            # NeuTu's global stop
-        z, y, x = (int(v) for v in _unflatten(np.int64(inside[best]), shape))
-        path = dijkstra3d.path_from_parents(parents, (z, y, x))
-        if not len(path):
-            break
-        _, labels = kimimaro.skeletontricks.roll_invalidation_ball_inside_component(
-            labels, DBF, scale, const, (1, 1, 1), path)
-        labels[path[:, 0], path[:, 1], path[:, 2]] = 0      # progress guarantee
-        paths.append(path)
-
-    if not paths:
-        return Skeleton()
-    skel = Skeleton.simple_merge(
-        [Skeleton.from_path(p) for p in paths]).consolidate()
-    v = skel.vertices.flatten().astype(np.uint32)
-    skel.radii = DBF[v[::3], v[1::3], v[2::3]]
-    return skel
-
-
-def decode_parents(parental_field):
-    """``dijkstra3d.parental_field`` -> flat parent index per voxel, -1 at the root.
-
-    The encoding is a **1-based Fortran-order flat index**; 0 means "no parent".
-    Not documented, so ``test_decode_parents_gives_adjacent_parents`` asserts every
-    decoded parent is 26-adjacent to its child — if dijkstra3d ever changes the
-    encoding, that test fails rather than the selection silently going haywire.
-    """
-    flat = np.asarray(parental_field).reshape(-1, order="F").astype(np.int64) - 1
-    return flat                                     # -1 where the field held 0
-
-
-def _chain_length_from_root_compact(parent, inside, shape):
-    """Geometric path length from the root, in the component's index space.
-
-    NeuTu's ``m_workspace->length[]``. Pointer doubling: chains run thousands of
-    voxels deep, so a Python walk per voxel is not viable, while doubling costs
-    ``log2(depth)`` vectorised gathers.
-    """
-    idx = np.arange(parent.size, dtype=np.int64)
-    jump = np.where(parent >= 0, parent, idx)
-    cz, cy, cx = _unflatten(inside, shape)
-    pz, py, px = _unflatten(inside[jump], shape)
-    acc = np.sqrt(((pz - cz) ** 2 + (py - cy) ** 2
-                   + (px - cx) ** 2).astype(np.float64))
-    acc[parent < 0] = 0.0
-    for _ in range(64):
-        nxt = jump[jump]
-        acc = acc + acc[jump]
-        if np.array_equal(nxt, jump):
-            break
-        jump = nxt
-    return acc
-
-
-def _unflatten(flat, shape):
-    """Fortran-order flat index -> (z, y, x), vectorised."""
-    nz, ny, _ = shape
-    z = flat % nz
-    rest = flat // nz
-    return z, rest % ny, rest // ny
-
-
-def _first_invalid_ancestor_length(parent, glen, valid):
-    """``glen`` at each voxel's nearest invalidated ancestor, by pointer doubling.
-
-    Uses the absorbing map ``f(v) = parent(v) if valid(v) else v``: once a chain
-    reaches an invalidated voxel it stops moving, so iterating ``f`` to a fixpoint
-    lands every voxel on its first invalidated ancestor. ``log2(depth)`` gathers
-    instead of a walk per voxel.
-    """
-    idx = np.arange(parent.size, dtype=np.int64)
-    step = np.where(valid & (parent >= 0), parent, idx)     # absorb at invalid/root
-    for _ in range(64):
-        nxt = step[step]
-        if np.array_equal(nxt, step):
-            break
-        step = nxt
-    anc = step
-    # a chain that never met an invalidated voxel has covered nothing: length 0
-    out = np.where(valid[anc], 0.0, glen[anc])
-    return out
 
 
 def _find_root(labels):

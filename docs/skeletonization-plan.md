@@ -359,19 +359,51 @@ runs both ways:
 | 6308993 | 1.01× tips, p90 **7.51** | **2.78×** tips, p90 **4.18** |
 | 45892915 | 1.16× tips, p90 **7.52** | **2.61×** tips, p90 **4.50** |
 
-So NeuTu's rule recovers much more of NeuTu's branch structure inside the noisy
-bulbs while adding ~2.7× the tips. **Neither dominates**, and the metrics cannot
-settle it because the bulbs are segmentation noise where "correct" is undefined —
-so the default stays `daf` (closer on counts) and the alternative stays available.
-`figures/selector_comparison.png` renders the difference.
+The figure settled what the medians could not, and **against** the new selector.
+`figures/selector_comparison.png`: it drops NeuTu-cable-absent from 13.6% to
+**2.8%** — so the p90 gain was real — but at **31.5% of its own cable added**, and
+that addition is overwhelmingly boundary convolution inside the bulbs. It was not
+choosing branches better; it was tracing nearly everything, including the third of
+its cable NeuTu deliberately rejects. On data where the bulbs are segmentation
+noise, that is the failure mode, not the fix.
+
+**So the code was removed** (it lived at commit `83d1356`), on the same grounds as
+the greedy selector: ~120 lines, a public `select` parameter nobody should pass,
+and a dependency on `parental_field`'s undocumented encoding. Everything needed to
+rebuild it is here — the encoding is a 1-based Fortran flat index with 0 at the
+root, and the per-round search must run in the component's index space, not the
+crop's.
 
 Two hypotheses for the extra branches were tested and **refuted**: restricting
 candidates to boundary voxels (NeuTu's `m_fgArray`) changed nothing (1.93× →
 1.93×), and NeuTu's effective threshold is *lower* than ours (8, since
 `minLength -= maskExpansionRadius`), which would give it more branches, not fewer.
-What remains unexcluded is that NeuTu grows its paths with `Stack_Sp_Grow` rather
-than `parental_field` over our per-voxel cost — an equivalence verified only on
-synthetic tubes, not inside convoluted bulbs.
+### What is actually left: three differences in the growth, none of them the cost
+
+Read from source rather than assumed. **The weight function already matches ours**:
+`Stack_Voxel_Weight_I` (`c/tz_stack_graph.c:205`) is `d/(1+v₁) + d/(1+v₂)` where
+`v` is the *squared* distance from `Stack_Bwdist_L_U16P` — i.e. `d/(1+r²)`, which
+is what `neutu_pdrf` computes. So "port NeuTu's growth" is not about the cost.
+
+What does differ, in decreasing order of suspicion:
+
+1. **Root selection — NeuTu re-seeds (`m_rebase`, on in our config).** It seeds at
+   the *thickest* voxel (`Stack_Max(tmpdist)`), grows, extracts the longest path,
+   then **re-seeds at that path's first point and grows again**
+   (`zstackskeletonizer.cpp:341-359`). Ours seeds at the geodesically farthest
+   point from `first_label`, an arbitrary voxel. Both land on an extremal tip, but
+   not the same one — and the root determines the whole parent tree, hence every
+   path. Small code change, plausibly large effect.
+2. **Edge form.** NeuTu's cost is symmetric over the edge; `parental_field` takes a
+   per-voxel field. `test_per_voxel_weights_match_neutu_edge_cost` shows they give
+   bit-identical paths on straight and bent tubes, but a tube is where they *should*
+   agree. Untested where it matters: inside a convoluted bulb. Measurable with the
+   slow reference Dijkstra already in that test file, on a bulb sub-crop.
+3. **Distance-map quantisation.** NeuTu's is uint16 *integer squared* distance; we
+   square a float EDT. At bulb radii (r≈10, r²≈100) that is ~1% relative, so this
+   is the weakest candidate — but it is a one-line experiment.
+
+Start with 1 and 2; both are cheap, and 2 is a pure measurement.
 
 **Also tried and removed: greedy path reselection.** Reframing the rule as a
 greedy set-cover over the paths from a `min_length=0` pass measured far worse
