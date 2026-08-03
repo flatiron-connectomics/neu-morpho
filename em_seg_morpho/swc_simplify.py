@@ -47,14 +47,34 @@ import numpy as np
 RADIUS_SCALE = 1.2
 DISTANCE_SCALE = 2.0
 
+# Exempt branch points and tips from region-sampling suppression. Defaults ON:
+# a global region_sample destroys branch structure the trace got right, which is a
+# defect of our generalisation rather than a tuning choice. Measured on body
+# 45892915: raw trace 66 branch points / mean degree 3.02 / max 4, matching NeuTu
+# exactly; without this, 44 / 3.52 / 7. Cable ratio also improves (1.09x -> 1.05x)
+# for the cost of ~2 nodes. See region_sample.
+PRESERVE_JUNCTIONS = True
+
 
 # --------------------------------------------------------------------------- #
 # step 2: radius-adaptive node placement
 # --------------------------------------------------------------------------- #
-def region_sample(vertices, radii, edges):
+def region_sample(vertices, radii, edges, preserve_junctions=PRESERVE_JUNCTIONS):
     """Drop every node that sits strictly inside a larger kept node's ball.
 
     Returns ``(vertices, radii, edges)`` reindexed onto the survivors.
+
+    ``preserve_junctions`` exempts branch points (degree ≥ 3) and tips (degree 1)
+    from suppression. **This is where NeuTu and this port diverge structurally.**
+    ``createSwcByRegionSampling`` consumes one traced *path* — a linear chain — so
+    it can never merge across a junction. Applied globally to a tree, as here, a
+    ball centred on a fat node beside a junction can swallow the junction and its
+    neighbours, collapsing several branch points into one hub.
+
+    Measured on body 45892915: the raw trace has **66 branch points, mean degree
+    3.02, max 4 — identical to NeuTu**. After a global region_sample it is 44
+    branch points, mean degree 3.52, max 7. The branch topology is not lost in
+    tracing; it is lost here.
     """
     from scipy.spatial import cKDTree
 
@@ -64,6 +84,11 @@ def region_sample(vertices, radii, edges):
     n = len(v)
     if n == 0:
         return v, r, e
+
+    protected = np.zeros(n, dtype=bool)
+    if preserve_junctions and len(e):
+        deg = np.bincount(e.ravel(), minlength=n)
+        protected = (deg >= 3) | (deg == 1)
 
     tree = cKDTree(v)
     kept = np.zeros(n, dtype=bool)
@@ -87,7 +112,8 @@ def region_sample(vertices, radii, edges):
         # strict '<' -- NeuTu uses `dist < prevVoxel.value()`, and a node exactly
         # on the ball surface is kept
         inside = near[np.linalg.norm(v[near] - v[i], axis=1) < r[i]]
-        dropped[inside[~kept[inside]]] = True
+        inside = inside[~kept[inside] & ~protected[inside]]
+        dropped[inside] = True
 
     return _contract(v, r, e, kept)
 
@@ -371,7 +397,8 @@ def prune_twigs(vertices, radii, edges, min_length, *, max_rounds=100):
     return v[idx], r[idx], remap[kept_e] if len(kept_e) else np.zeros((0, 2), dtype=int)
 
 
-def simplify(vertices, radii, edges, *, prune_below=0.0, **kw):
+def simplify(vertices, radii, edges, *, prune_below=0.0,
+             preserve_junctions=PRESERVE_JUNCTIONS, **kw):
     """The full reduction: prune, region-sample, then downsample.
 
     Pruning runs **first**, on the dense skeleton, where twig lengths are
@@ -380,5 +407,5 @@ def simplify(vertices, radii, edges, *, prune_below=0.0, **kw):
     v, r, e = vertices, radii, edges
     if prune_below > 0:
         v, r, e = prune_twigs(v, r, e, prune_below)
-    v, r, e = region_sample(v, r, e)
+    v, r, e = region_sample(v, r, e, preserve_junctions=preserve_junctions)
     return optimal_downsample(v, r, e, **kw)

@@ -93,6 +93,11 @@ def main() -> int:
                     help="dir holding b<body>_simplify.npz "
                          "(default: <benchmark>/fixed/port)")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--third-dir", default=None,
+                    help="npz dir for the third panel (default: kimimaro production)")
+    ap.add_argument("--third-label", default="kimimaro production  (ships today)")
+    ap.add_argument("--title",
+                    default="Skeletons at NeuTu's own settings")
     ap.add_argument("--tol-vox", type=float, default=6.0,
                     help="centreline distance above which cable counts as absent")
     a = ap.parse_args()
@@ -119,12 +124,15 @@ def main() -> int:
             f"{a.benchmark}/neutu_swc/b{body}_neutu_L10.swc")
         en = neutu_io.swc_edges(par, nid)
         vp, rp, ep = _npz(f"{port_dir}/b{body}_simplify.npz")
-        vk, rk, ek = _npz(f"{a.benchmark}/kimimaro/b{body}_kimi_production.npz")
+        vk, rk, ek = _npz(f"{a.third_dir}/b{body}_simplify.npz" if a.third_dir
+                          else f"{a.benchmark}/kimimaro/b{body}_kimi_production.npz")
         ag = skelmetrics.agreement(vp, rp, ep, zn, rn, en)
+        agk = (skelmetrics.agreement(vk, rk, ek, zn, rn, en) if a.third_dir
+               else None)
 
         panels = [("NeuTu  (reference)", zn, rn, en, C_NEUTU, None),
                   ("port  (neutu_trace + swc_simplify)", vp, rp, ep, C_PORT, ag),
-                  ("kimimaro production  (ships today)", vk, rk, ek, C_KIMI, None)]
+                  (a.third_label, vk, rk, ek, C_KIMI, agk)]
         for col, (name, v, r, e, c, agr) in enumerate(panels):
             _draw(ax[row, col], mip, v, e, c, axis)
             ax[row, col].set_title(name, fontsize=10.5, color=INK, pad=8)
@@ -138,7 +146,7 @@ def main() -> int:
 
         # panel 4: disagreement, both directions
         pn, _ = skelmetrics.sweep(zn, rn, en)
-        dv, dr, de = vp, rp, ep
+        dv, dr, de = (vk, rk, ek) if a.third_dir else (vp, rp, ep)
         pp, _ = skelmetrics.sweep(dv, dr, de)
         miss = cKDTree(pp).query(pn)[0] > a.tol_vox          # NeuTu has it, we don't
         extra = cKDTree(pn).query(pp)[0] > a.tol_vox         # we have it, NeuTu doesn't
@@ -154,7 +162,8 @@ def main() -> int:
                     c=C_MISS, linewidths=0, zorder=4)
         axm.set_xlim(0, mip.shape[0])
         axm.set_ylim(0, mip.shape[1])
-        axm.set_title(f"port vs NeuTu (> {a.tol_vox:.0f} vox)",
+        axm.set_title(f"panel 3 vs NeuTu (> {a.tol_vox:.0f} vox)" if a.third_dir
+                      else f"port vs NeuTu (> {a.tol_vox:.0f} vox)",
                       fontsize=10.5, color=INK, pad=8)
         axm.text(0.02, 0.03,
                  f"{100*miss.mean():.1f}% of NeuTu cable absent\n"
@@ -182,7 +191,7 @@ def main() -> int:
                         mpatches.Patch(color=C_EXTRA, label="port cable NeuTu lacks")],
                loc="lower center", ncol=5, frameon=False, fontsize=10.5,
                bbox_to_anchor=(0.5, 0.004))
-    fig.suptitle("Skeletons at NeuTu's own settings — the two largest thick bodies",
+    fig.suptitle(a.title, 
                  fontsize=13.5, color=INK, y=0.997)
     fig.subplots_adjust(left=0.045, right=0.99, top=0.93, bottom=0.07,
                         wspace=0.05, hspace=0.10)
