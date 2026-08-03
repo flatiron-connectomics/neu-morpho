@@ -116,6 +116,102 @@ def score(mask_zyx: np.ndarray, zyx, radii, edges=None, step: float = 0.5) -> di
     }
 
 
+def agreement(zyx_a, radii_a, edges_a, zyx_b, radii_b, edges_b,
+              step: float = 0.5) -> dict:
+    """How closely skeleton A reproduces reference skeleton B.
+
+    **This is the metric to optimise against, not** :func:`score`. Coverage is
+    confounded by branch count — more branches fill more, so a skeletonizer that
+    invents spurious neurites scores *better*. Measured on the benchmark, the
+    Python port beat NeuTu on coverage while carrying 5–10× its tip count and
+    being 1.4–3.5× *less* coverage-efficient per unit cable. Optimising coverage
+    optimises for the defect.
+
+    There is no ground truth to appeal to instead: these segmentations are dense
+    (every voxel belongs to some segment) and many segments are pieces of one
+    neuron incorrectly split, so "what should this body's skeleton cover" is not
+    answerable per segment. NeuTu is the reference because it is known to behave
+    well enough, not because it is right.
+
+    ``a_to_b`` / ``b_to_a`` are distances between densely resampled centrelines,
+    so they measure the *paths*, not the node positions — a skeleton with the
+    same shape but different node placement scores near zero. ``b_to_a`` is the
+    one that catches missing branches; ``a_to_b`` catches invented ones.
+    """
+    from scipy.spatial import cKDTree
+
+    pa, ra = sweep(zyx_a, radii_a, edges_a, step)
+    pb, rb = sweep(zyx_b, radii_b, edges_b, step)
+    if not len(pa) or not len(pb):
+        return {}
+    ta, tb = cKDTree(pa), cKDTree(pb)
+    d_ab, _ = tb.query(pa)               # each point of A -> nearest on B
+    d_ba, ia = ta.query(pb)              # each point of B -> nearest on A
+
+    def tips(v, e):
+        e = np.asarray(e, int).reshape(-1, 2)
+        if not len(e):
+            return 0
+        return int((np.bincount(e.ravel(), minlength=len(v)) == 1).sum())
+
+    def cable(v, e):
+        v, e = np.asarray(v, float), np.asarray(e, int).reshape(-1, 2)
+        return float(np.linalg.norm(v[e[:, 0]] - v[e[:, 1]], axis=1).sum()) if len(e) else 0.0
+
+    ca, cb = cable(zyx_a, edges_a), cable(zyx_b, edges_b)
+    return {
+        "a_to_b_median": float(np.median(d_ab)),
+        "a_to_b_p90": float(np.percentile(d_ab, 90)),
+        "b_to_a_median": float(np.median(d_ba)),
+        "b_to_a_p90": float(np.percentile(d_ba, 90)),
+        "node_ratio": len(np.asarray(zyx_a)) / max(1, len(np.asarray(zyx_b))),
+        "tip_ratio": tips(zyx_a, edges_a) / max(1, tips(zyx_b, edges_b)),
+        "cable_ratio": ca / max(1e-9, cb),
+        # radius of A at the point of A nearest each B sample, vs B's own radius
+        "radius_ratio_median": float(np.median(ra[ia] / np.maximum(1e-9, rb))),
+    }
+
+
+def spill_by_neighbour_size(mask_zyx, nbr_size_class, zyx, radii, edges=None,
+                            small_bin_max: int = 3, step: float = 0.5) -> dict:
+    """Where the tube spills to, graded by how large the neighbour it enters is.
+
+    **Diagnostic, not an objective.** There is no ground truth here, so nothing
+    in this function establishes that a given spill is wrong; optimise against
+    :func:`agreement` instead. It exists because plain "spill" is uninformative
+    on a dense segmentation: every voxel belongs to some segment, so a tube that
+    leaves the body necessarily enters a neighbour, and 0.0% of spill lands on
+    background.
+
+    The graded version carries some signal, on one assumption worth stating
+    because it is not verified: **most false splits are small fragments**. Under
+    it, spill into a small fragment is likely reclaiming the same neuron, while
+    spill into a large, morphologically complete neighbour is more likely a real
+    error. Neither is certain — a small fragment can be a genuinely separate
+    structure, and a large neighbour can be the same neuron badly split.
+
+    ``nbr_size_class`` is the uint8 map from ``export_benchmark_masks.py``: 0 for
+    this body or background, higher bins for larger neighbours.
+    ``small_bin_max`` is the highest bin still counted as a fragment; sweep it,
+    since the boundary is a judgement call rather than a measurement.
+    """
+    mask = np.asarray(mask_zyx).astype(bool)
+    cls = np.asarray(nbr_size_class)
+    tube = rasterize(mask.shape, zyx, radii, edges, step)
+    inter = int((tube & mask).sum())
+    n_tube = max(1, int(tube.sum()))
+    out = tube & ~mask
+    small = int((out & (cls > 0) & (cls <= small_bin_max)).sum())
+    large = int((out & (cls > small_bin_max)).sum())
+    return {
+        "coverage": inter / max(1, int(mask.sum())),
+        "spill_into_fragments": small / n_tube,
+        "spill_into_large_neighbours": large / n_tube,
+        "spill_into_background": (n_tube - inter - small - large) / n_tube,
+        "nodes": int(len(radii)),
+    }
+
+
 def radius_vs_edt(mask_zyx: np.ndarray, zyx, radii) -> dict:
     """Diagnostic: reported radius against the mask's own distance transform.
 

@@ -1,17 +1,44 @@
 # NeuTu vs kimimaro: skeletons and vertex radii
 
-Measured 2026-07-30 on specimen 3, scale 2 (32 nm/voxel). Two bodies, identical
-input masks, both tools scored on the same question.
+Specimen 3, scale 2 (32 nm/voxel). Two measurement rounds:
+
+- **2026-07-30** — two bodies, in depth. Source of the mechanism analysis below.
+- **2026-07-31** — widened to **12 bodies**, half of them thick, plus the first
+  Python port. This round **corrected two conclusions from the first**; see
+  [Corrections](#corrections--things-established-as-wrong) before relying on
+  anything here.
 
 **Visual version: [`skeletonization-comparison.html`](skeletonization-comparison.html)**
-— same findings with the rendered figures inline; open it in a browser. Regenerate
-with `scripts/build_comparison_report.py` (add `--embed` for a single self-contained
-file to share).
+— the 2-body findings with the rendered figures inline; open it in a browser.
+Regenerate with `scripts/build_comparison_report.py` (add `--embed` for a single
+self-contained file to share).
 
-Reusable code from that session is now `em_seg_morpho/neutu_io.py`,
-`em_seg_morpho/skelmetrics.py` and `scripts/compare_skeletons_visual.py`.
+Reusable code: `em_seg_morpho/neutu_io.py`, `em_seg_morpho/skelmetrics.py`,
+`em_seg_morpho/neutu_trace.py`, and under `scripts/`,
+`pick_benchmark_bodies.py` → `export_benchmark_masks.py` → `run_skel_benchmark.py`
+(the benchmark pipeline) plus `compare_skeletons_visual.py`.
+
 Reference outputs:
-`/path/to/scratch/morpho-skel-benchmark/2026-07-30-specimen3/`.
+`/path/to/scratch/morpho-skel-benchmark/2026-07-30-specimen3/` (2 bodies)
+and `.../2026-07-31-wide/` (12 bodies, masks + NeuTu SWCs + baselines).
+
+---
+
+## Production already emits vertex radii
+
+Worth stating up front, because it is easy to believe otherwise. The published
+volume carries a spec-conformant `radius` vertex attribute:
+
+    info:  "vertex_attributes": [{"id":"radius","data_type":"float32","num_components":1}]
+    6308993: 9,303 vertices, 1 float32 attr/vertex, radius 32.0–390.6 nm, no -1 sentinels
+
+Radii looked absent before 2026-07-28 because of a *viewer-level* failure, fixed
+in `2dc7434`: the declared `vertex_types` attribute was **uint8**, and
+neuroglancer rejects the entire layer with "Data type not supported by WebGL:
+UINT8". The file was spec-legal and unloadable, so nothing rendered at all.
+
+The open problem is therefore the **values**, not the attribute — see
+[radius](#what-the-segmentation-can-support) below.
 
 ---
 
@@ -59,21 +86,89 @@ fill an irregular one. Read the numbers against each other, not against perfecti
 | kimimaro | production — scale 1.5, const 150 nm | 5,705 | 39% | 4% | 345 nm | ~9 min |
 
 On the larger arbor NeuTu fills nearly twice as much of the segment from a quarter
-of the nodes. That is the result the plan is built on.
+of the nodes. That is the result the plan was built on — **and the 12-body round
+below does not reproduce the size of that gap.** Read on before quoting it.
+
+### 12 bodies (2026-07-31)
+
+Bodies chosen by `scripts/pick_benchmark_bodies.py` from the production run's
+`metrics.db`, stratified on `max_radius_nm` × `cable_length_nm` so that **half
+are thick** (≥ p90 radius), spanning 5 K–1 M voxels. The two bodies above are
+pinned into the set; both reproduce their 07-30 numbers to within ~1%, the
+difference being a slightly more generous crop.
+
+| | kimimaro production | NeuTu minlen=10 | port |
+|---|---:|---:|---:|
+| median fill | 68% | 71% | **75%** |
+| median nodes | 3,195 | **912** | 1,417 |
+| median spill | **8%** | 17% | 13% |
+| median radius error | 0.00 vox | −0.50 vox | 0.00 vox |
+| total time, 12 bodies | 1,703 s | **83 s** | 147 s |
+
+The port (`neutu_trace` + `swc_simplify`) sits at **1.21× NeuTu's node count with
++3.2 points of fill, ahead on 10 of 12 bodies**, and against what ships today —
+kimimaro production — it is **2.3× fewer nodes, +7 points of fill, 12× faster**,
+with radii still exact inscribed radii.
+
+**What produced the node count was branch rejection, not node spacing.** Before
+NeuTu's `minimalLength` was ported the same code sat at 2.4× NeuTu's nodes; the
+natural read was that it placed nodes too densely, and that read was wrong — per
+100 voxels of cable it was already *sparser* than NeuTu (10.3 vs 16.6 on body
+6308993). It simply traced 10.5× more cable, with 5,022 tips against NeuTu's 116.
+The lever is which branches get traced at all. See step 5 of the plan.
+
+**NeuTu's fill advantage is real but modest and not uniform**: +3 points at the
+median, ahead on 9 of 12 bodies, and *behind* on body 79347718 (55% vs 66%). The
+two-body result (73% vs 39%) is not representative.
+
+**Node economy is the large, consistent win — and it scales with thickness**,
+which is why thick bodies are the ones worth caring about:
+
+| band | body | kimimaro nodes | NeuTu nodes | ratio |
+|---|---|---:|---:|---:|
+| thick-huge | 45892915 | 5,633 | 442 | **12.7×** |
+| pinned (thick) | 6308993 | 11,867 | 1,383 | 8.6× |
+| thick-medium | 45813451 | 1,896 | 229 | 8.3× |
+| thick-small | 4978519 | 288 | 42 | 6.9× |
+| thin-large | 43230132 | 5,863 | 3,858 | 1.5× |
+| thin-medium | 79347718 | 2,108 | 1,622 | 1.3× |
+
+Median 3.0× overall. The thin bodies barely differ; the thick ones differ by an
+order of magnitude.
 
 **Node economy** is the other real difference: NeuTu spends ~1 node per 2.9 voxels
 of cable where kimimaro spends ~1 per 1.5.
 
-**The radius conventions differ, and that is the whole story on radius.** kimimaro
-sets `radii = DBF[vertex]` — the exact inscribed radius, correct at the node and
-systematically small wherever a cross-section isn't round. NeuTu's are larger, which
-fills better. Visible in the z-slice panels: NeuTu's circle fills the cross-section,
-kimimaro's leaves a rim all the way around.
+**The radius conventions differ**, and the 2-body round concluded that was "the
+whole story on radius". ~~It is not~~ — see the correction below. kimimaro sets
+`radii = DBF[vertex]`, the exact inscribed radius, correct at the node and
+systematically small wherever a cross-section isn't round.
 
-The counterweight: NeuTu reports a **543 nm** max radius on body 6308993 where the
-largest sphere fitting anywhere in that mask is **345 nm**, and ~13% of its nodes are
->2 voxels above the local distance-transform value. Fine for rendering; a real error
-if reused for measurement.
+NeuTu's radii are **bimodal**, and the median goes the *opposite* way from what
+the z-slice panels suggest. Across 12 bodies, against each mask's own distance
+transform (`skelmetrics.radius_vs_edt`, in voxels):
+
+| | NeuTu median error | NeuTu frac >2 vox over | kimimaro |
+|---|---:|---:|---|
+| 8 of 12 bodies | **−0.50** | 0–3% | 0.00 / 0% by construction |
+| thick bodies | +0.09 … +0.77 | 7–27% | 0.00 / 0% |
+
+The **−0.50** is `AdjustedDistanceWeight` (`gui/zstackskeletonizer.cpp:82`,
+`max(0.1, √v − 0.5)`) landing exactly as written: NeuTu's typical node reports a
+radius *half a voxel smaller* than the inscribed sphere. What inflates the
+headline maximum is a minority tail on thick bodies:
+
+| body | NeuTu max radius | largest sphere that fits | nodes >2 vox over |
+|---|---:|---:|---:|
+| 45892915 | 852 nm | 354 nm | 27% |
+| 6308993 | 720 nm | 359 nm | 12% |
+| 4978519 | 336 nm | 288 nm | 17% |
+
+Reporting 2.4× the largest radius the mask can support is a real error if these
+are reused for measurement, and it is concentrated exactly where the segmentation
+is thickest. Where it comes from is **not** the radius formula — that subtracts
+half a voxel — so it must enter at the region-sampling or resampling step, which
+is worth pinning down before porting either (steps 2–3 of the plan).
 
 ## What the segmentation can support
 
@@ -138,6 +233,34 @@ Recorded so they are not re-derived.
 - **"This body has no soma" overstepped.** It was inferred from mask geometry alone.
   The correct statement is that the *mask* has no thick region.
 
+- **"NeuTu's larger radii are what fills better" is wrong** (established
+  2026-07-31, 12 bodies). NeuTu's *median* radius error is **−0.50 voxels** — it
+  reports radii **smaller** than the inscribed sphere, not larger, because
+  `AdjustedDistanceWeight` subtracts half a voxel exactly as its source says.
+  Only a 0–27% tail overshoots. Two independent lines of evidence say fill is
+  driven by **path coverage and node placement**, not radius: (a) NeuTu fills
+  more than kimimaro while reporting a smaller median radius, and (b) the Python
+  port reaches **92% fill using kimimaro's exact inscribed radii**, well past
+  NeuTu's 71%. Do not tune radius to chase fill — it is the wrong lever, and it
+  would trade a measurable quantity for one that is not.
+
+- **A single-root TEASAR trace covers exactly one connected component.** Not a
+  claim from the earlier round, but the same class of silent error and it cost
+  real time. The parent field and the rolling-ball invalidation are both confined
+  to the root's component, and the root comes from `first_label` — whichever
+  voxel is first in memory order. On body 6308993 that landed on a component
+  holding 3.06% of the voxels and the trace reported 3% coverage. These bodies
+  are genuinely fragmented, so **any** skeletonizer added here must iterate
+  components; `neutu_trace.skeletonize` does, and
+  `test_all_connected_components_are_traced` holds it to that.
+
+- **`1/(1 + r²)` makes background the cheapest voxel in the volume.** NeuTu never
+  puts background in its graph, so it has no such hazard; `dijkstra3d` takes a
+  weight field with no separate mask, and `1/(1 + inf²)` is **0**. Paths then cut
+  straight through empty space. kimimaro is safe only incidentally — its
+  `(1 − DBF·M)^exponent` sends background to `+inf`. Any new cost function has to
+  set background to `inf` explicitly.
+
 ## Operating the NeuTu CLI
 
 Built in a separate conda env (`managed_neutu`); it cannot be installed alongside
@@ -163,11 +286,19 @@ neutu --command --config cfg.json body.sobj --skeletonize
 
 ## Scope — what this does not establish
 
-- **Two bodies, one specimen**, both thin-process arbors (median diameter
-  110–140 nm). Nothing here is tested on genuinely thick structure.
-- **No ground truth.** Everything is scored against imperfect masks.
-- **The ranking already reversed once**, when a modelling error in the metric was
-  fixed. Treat it as provisional until the benchmark is wider — see step 0 of
-  `skeletonization-plan.md`.
-- **kimimaro relaxed was never run on body 6308993** (production alone took ~9 min on
-  that bbox), so the best-coverage setting is unmeasured on the larger body.
+- **One specimen, 12 bodies.** Wide enough to have overturned two conclusions
+  from the 2-body round, not wide enough to be a statistical claim. The set is
+  built as **regression fixtures** — deliberately weighted toward thick,
+  problematic bodies — so its medians are not the medians of the dataset.
+- **No ground truth.** Everything is scored against imperfect masks. "Fill" is a
+  pragmatic target for visualization and the wrong one for measurement.
+- **The ranking has now reversed twice** — once when sphere-stamping was fixed,
+  once when the radius conclusion was corrected. Both times the error was in the
+  *model of the question*, not the data. Treat any single-round conclusion here
+  as provisional.
+- **kimimaro relaxed is still unmeasured on the large bodies.** Deliberately
+  dropped from the 12-body round: it exists to answer whether NeuTu's advantage
+  is robust, and 231 s on a 200 K-voxel body made it the dominant cost. If the
+  ranking is ever in question again, this is the missing arm.
+- **Everything is at scale 2.** No claim about finer scales, where the docs'
+  fragmentation finding says component counts rise sharply.

@@ -4,9 +4,40 @@ Background and evidence: `docs/skeletonization-comparison.md`. Read that first �
 in particular the "Corrections" section, which lists conclusions already established
 as wrong.
 
+**Status (2026-07-31). All five steps are done.** `em_seg_morpho/neutu_trace.py`
+(tracing, with NeuTu's cost and `minimalLength`) plus
+`em_seg_morpho/swc_simplify.py` (node reduction) now match NeuTu's node economy
+while filling more:
+
+| | kimimaro prod | NeuTu L10 | **port** |
+|---|---:|---:|---:|
+| median fill | 68% | 71% | **75%** |
+| median nodes | 3,195 | **912** | 1,417 |
+| median spill | **8%** | 17% | 13% |
+| total time, 12 bodies | 1,703 s | **83 s** | 147 s |
+
+Against NeuTu: **1.21× the nodes, +3.2 points of fill, ahead on 10 of 12 bodies.**
+Against kimimaro production, which is what ships today: **2.3× fewer nodes, +7
+points of fill, 12× faster**, with radii unchanged as exact inscribed radii.
+
+Step 4 closed with no code. What remains is **wiring it into the pipeline** —
+see "Integration" at the bottom, which is not a small change.
+
+**Step 5 was the whole node-count story, and this plan under-rated it** — it was
+filed as "only if runtime demands it". It is the opposite: it is the single
+largest lever on node count, and no amount of post-hoc simplification substitutes
+for it. See step 5 for the measurement.
+
 **Goal.** Skeletons that fill the segment well, with few nodes and radii good enough
-for visualization. NeuTu currently does this better than kimimaro at production
-settings (73% fill / 1,431 nodes vs 39% / 5,705 on body 6308993).
+for visualization. Two things have been re-scoped since this was written:
+
+- **Radius attributes already ship.** Production emits a spec-conformant float32
+  `radius` per vertex and has since `2dc7434`. The goal is better *values*, not a
+  new attribute.
+- **Radius is not the fill lever.** The original framing ("NeuTu's larger radii
+  fill better") is measured wrong; NeuTu's median radius is *smaller* than the
+  inscribed sphere. Fill comes from path coverage and node placement. Tuning
+  radius to chase fill trades a measurable quantity for one that is not.
 
 **Two routes.** Preferred: reimplement NeuTu's method in Python. Fallback: shell out
 to the NeuTu binary from its own environment as an optional pipeline stage
@@ -39,37 +70,73 @@ Mapping NeuTu onto it:
 **The Dijkstra never leaves C++.** `dijkstra3d` and `skeletontricks` do the heavy
 work unchanged, so runtime should be kimimaro's. NeuTu's length-based termination may
 make it *faster* than kimimaro is today at comparable invalidation (1.3 s vs 231 s).
+Confirmed: 164 s vs kimimaro's 1,703 s over the 12-body set.
 
-Vendor `kimimaro.trace.trace` and `compute_paths` into this package rather than
-monkeypatching, so the behaviour is readable and pinned.
+~~Vendor `kimimaro.trace.trace`~~ — **reimplemented instead.** Importing and
+calling it is impossible (it computes the cost inline with no hook, so injecting
+one means monkeypatching `compute_pdrf` process-globally), but copying it turned
+out to be the wrong alternative: once soma mode and `fix_branching` are dropped —
+NeuTu has neither — what remains is ~40 lines of orchestration around the C++
+primitives, which are *imported* either way. Reimplementing gets the same
+readable-and-pinned property with no upstream-drift obligation. It does not change
+the licence position: `kimimaro` and `dijkstra3d` are GPL-3.0-or-later and are
+imported regardless, so em-seg-morpho is a GPL-combined work.
 
 ---
 
-## Step 0 — widen the benchmark first
+## Step 0 — widen the benchmark first ✅ done 2026-07-31
 
-**Do this before writing any skeletonizer code.** The current conclusion rests on two
-bodies from one specimen, and the metric already reversed once. Pick ~10 bodies from
-`configs/largest_20k_bodies.csv` spanning a range of size and thickness, export masks
-at scale 2, and record for each: NeuTu SWC (the regression target), kimimaro at
-production and relaxed settings, and `skelmetrics.score` for all.
+12 bodies (target was ~10), **half of them thick**, at
+`/path/to/scratch/morpho-skel-benchmark/2026-07-31-wide/`: masks, NeuTu
+reference SWCs, kimimaro baselines, `results.json`, and `bodies.json` recording
+the selection. Pipeline: `scripts/pick_benchmark_bodies.py` →
+`export_benchmark_masks.py` → `run_skel_benchmark.py`.
 
-Store masks and reference SWCs on ceph, not in the repo. Cheap, and it de-risks
-everything below — if NeuTu's advantage is body-dependent, better to know now.
+Two changes from the plan as written, both deliberate:
 
-## Step 1 — NeuTu-style cost, everything else kimimaro
+- **kimimaro *relaxed* was dropped.** It exists to test whether NeuTu's advantage
+  is robust; that question was settled independently, and relaxed was the
+  dominant cost (231 s on a 200 K-voxel body, never completed on a 1 M one).
+- **The set is weighted toward thick bodies, not representative.** These are
+  regression fixtures for catching porting bugs, and thick bodies are where the
+  tools diverge most — the node-count ratio runs 12.7× on thick bodies and 1.3×
+  on thin ones.
 
-Vendor `trace()`, swap in `PDRF = 1/(1 + DBF**2)`, run with `scale=1.0, const=2`.
+It earned its keep: it overturned the radius conclusion, and it caught the
+connected-component bug in step 1 that unit tests on synthetic tubes did not.
 
-Verify against the NeuTu references from step 0. One thing to check rather than
-assume: `parental_field` takes **per-voxel** weights, whereas NeuTu's cost is the
-symmetric edge form `d·[f(v₁) + f(v₂)]`. These should differ only by a constant
-factor and boundary terms, leaving the argmin path unchanged — but confirm it with a
-test on a synthetic tube before trusting it on real data.
+## Step 1 — NeuTu-style cost, everything else kimimaro ✅ done 2026-07-31
 
-Expected: centreline close to NeuTu's, node count still kimimaro-like (dense),
-fill improved over kimimaro production.
+`em_seg_morpho/neutu_trace.py`, with `tests/test_neutu_trace.py` (11 tests).
 
-## Step 2 — radius-adaptive node placement
+The `parental_field` question the plan said to confirm rather than assume: **the
+per-voxel substitution is exact here.** Checked against an independent, slow
+Dijkstra using NeuTu's symmetric edge cost `d·[f(v₁) + f(v₂)]` on straight and
+bent synthetic tubes — the paths come out **bit-identical**, ratio 1.000000
+(`test_per_voxel_weights_match_neutu_edge_cost`). The telescoping argument holds
+despite mixed 3D step lengths.
+
+Result, as predicted: fill well past kimimaro, node count still dense.
+
+| | kimimaro production | NeuTu minlen=10 | step 1 |
+|---|---:|---:|---:|
+| median fill | 68% | 71% | **92%** |
+| median nodes | 3,195 | **912** | 7,947 |
+| total time, 12 bodies | 1,703 s | 83 s | 164 s |
+
+**Two traps found, neither visible without a test.** Both are written up in the
+comparison doc's Corrections; in short: `1/(1+r²)` makes background the *cheapest*
+voxel in the volume (`1/(1+inf²)` = 0) so paths cut through empty space; and a
+single-root trace covers exactly one connected component, which on body 6308993
+meant 3% coverage.
+
+**A unit trap to preserve.** `1/(1 + r²)` is not scale-invariant — the `1` is one
+voxel squared. Feed it a DBF in nm at 32 nm/voxel and the same body's weights span
+a factor of 157 instead of 80. `neutu_trace` therefore works in voxels and raises
+rather than accepting an anisotropy it cannot honour. NeuTu's EDT is not
+anisotropy-aware either, so there is no faithful anisotropic version to port.
+
+## Step 2 — radius-adaptive node placement ← **the whole remaining gap**
 
 Port `createSwcByRegionSampling` (`gui/zswcgenerator.cpp:196`): sort path voxels by
 decreasing radius, greedily drop any within a kept larger voxel's ball. NeuTu's
@@ -78,28 +145,136 @@ implementation is O(n²); use a KD-tree.
 This is **tool-independent post-processing** — it applies to any SWC, so it is worth
 having even if step 1 is abandoned. Expected: ~2× fewer nodes at equal fill.
 
-## Step 3 — radius-aware simplification
+**Done 2026-07-31** — `swc_simplify.region_sample`, with
+`tests/test_swc_simplify.py`. **7,947 → 3,304 median nodes (2.4×, up to 5.0× on
+thick bodies) for 1 point of fill.** Better than the ~2× expected, and the
+reduction is largest exactly where node counts hurt: body 45892915 went 28,180 →
+5,598.
 
-Port `ZSwcResampler::optimalDownsample` (`gui/swc/zswcresampler.cpp:90`): iterate to a
-fixpoint, dropping a node when its ball is contained in a neighbour's or when
-interpolating parent↔child reproduces it in position (within `radius/2`) and radius
-(within 1.2×). Smooths radii as a side effect.
+Two departures from NeuTu, both forced by our input being a tree:
 
-## Step 4 — radius convention
+- `createSwcByRegionSampling` consumes a `ZVoxelArray` — one traced path — and
+  re-emits survivors as a **linear chain**. Ours is already a tree, so chaining
+  would destroy branch structure. The kept nodes inherit the original
+  connectivity instead: kept neighbours stay joined, and each clump of dropped
+  nodes becomes a star joining the kept nodes it used to link. Tests assert the
+  result stays connected, acyclic, and keeps its branch points.
+- NeuTu's suppression is O(n²) against every larger kept node. Marking **forward**
+  from each kept node through a KD-tree is equivalent — a node is dropped iff some
+  kept node of larger-or-equal radius contains it — and is what makes 50,000
+  nodes tractable.
 
-Move from inscribing to filling. kimimaro's `radii = DBF[vertex]` under-fills
-non-circular cross-sections; NeuTu's larger radii fill better but overshoot the true
-maximum (543 nm reported vs 345 nm available on body 6308993).
+**Where NeuTu's over-large radii enter is still unidentified — but it is not
+here.** This pass *selects* nodes and never interpolates, so radii stay exactly
+`DBF[vertex]`: measured median error 0.00 voxels, 0% of nodes over by >2, max
+radius equal to the largest sphere the mask admits. NeuTu's inflation must come
+from something else in its pipeline; we do not reproduce it and should not.
 
-Neither is obviously right. Sweep a scale factor against `skelmetrics.score` on the
-step-0 benchmark and pick the fill/spill trade you want. **Record the choice and its
-rationale** — a radius tuned for filling is not a measurement.
+## Step 3 — radius-aware simplification ✅ done 2026-07-31
 
-## Step 5 — length-based branch termination
+`swc_simplify.optimal_downsample`, a faithful port of
+`ZSwcResampler::optimalDownsample` (`gui/swc/zswcresampler.cpp:90`) including
+`suboptimalDownsample`, `isInterRedundant`, and the `isWithin` /
+`hasSignificantOverlap` predicates, iterated to a fixpoint. NeuTu's defaults
+carry over: `m_radiusScale = 1.2`, `m_distanceScale = 2.0`.
 
-Only if runtime demands it. Add NeuTu's `minimalLength` test on *un-invalidated
-geodesic length* to the vendored `compute_paths`, terminating extraction early
-instead of running until everything is invalidated.
+**3,304 → 2,480 median nodes (a further 1.3×) for ~1 point of fill.** Smaller than
+step 2, as expected — step 2 has already removed the redundancy this pass targets.
+It earns its place on the long thin arbors, where it is the larger of the two
+(body 42074060: 8,842 → 6,125).
+
+The one thing to know if this is ever revisited: NeuTu's merge options
+(`MERGE_W_PARENT` / `MERGE_W_CHILD` / `MERGE_WEIGHTED_AVERAGE`) do move node
+positions, unlike step 2 — so this is the pass that *could* drift radii away from
+the distance transform. Measured, it does not: radii still show 0.00 median error
+and 0% over by >2 voxels.
+
+## Step 4 — radius convention ✅ closed with no code
+
+This step assumed NeuTu's radii are larger and that this is what fills better.
+Both halves are measured wrong (see Corrections). NeuTu's *median* radius error
+is **−0.50 voxels** — smaller than the inscribed sphere — and step 1 reaches 92%
+fill using kimimaro's exact inscribed radii, well past NeuTu's 71%.
+
+So there is no fill argument for changing the convention, and the inscribed
+radius has the large advantage of meaning something: it is the largest sphere
+that fits, which survives being reused for measurement. **Recommendation: keep
+`radii = DBF[vertex]` and do not sweep a scale factor.**
+
+The remaining worry was that steps 2–3 would *silently* inherit NeuTu's
+inflation when they merge nodes. **Measured after step 3, on every body: median
+error 0.00 voxels, 0% of nodes over by more than 2, and a maximum radius equal to
+the largest sphere the mask admits.** Step 2 selects rather than interpolates, and
+step 3's merges do not drift. So this step is finished, and the radii the pipeline
+would publish are exact inscribed radii — reusable for measurement, not just
+rendering.
+
+**Do not port the `−0.5` correction** — established harmful, and now confirmed as
+the source of NeuTu's negative median error.
+
+## Step 5 — length-based branch termination ✅ done 2026-07-31 — **the main lever**
+
+Filed here as "only if runtime demands it". That was wrong, and it cost a detour
+through steps 2–3 before the diagnosis was made. **This is the single largest
+determinant of node count.**
+
+`neutu_trace._uninvalidated_length` + the `min_length` parameter, ported from
+`ZSpGrowParser::pathLength(idx, masked=true)` and the
+`if (length < minLength) isPathAvailable = false` test at
+`gui/zspgrowparser.cpp:317`.
+
+### The diagnosis, because the obvious answer was wrong
+
+After steps 2–3 the port sat at 2.4× NeuTu's nodes, and the natural assumption
+was that it placed them too densely. **It did not.** Per 100 voxels of cable:
+
+| body | NeuTu | port | |
+|---|---:|---:|---|
+| 6308993 | 16.6 | 10.3 | port sparser |
+| 18166095 | 43.3 | 19.1 | port sparser |
+| 45813451 | 14.3 | 9.1 | port sparser |
+
+The gap was **entirely cable** — 3–13× more of it, and **5,022 tips against
+NeuTu's 116** on body 6308993. Node economy was never the problem; branch count
+was. Anyone re-opening this should measure `nodes / cable` and `tip count` first.
+
+### Why the criterion has to be un-invalidated length
+
+Pruning short twigs geometrically afterwards is **strictly dominated** — the two
+approaches, swept to comparable node counts on real bodies:
+
+| body | post-hoc twig pruning | in-extraction `minimalLength` | NeuTu |
+|---|---|---|---|
+| 45813451 | 198 nodes → 65% fill | 352 → **77%** | 229 → 74% |
+| 35668783 | 264 → 45% | 534 → **72%** | 272 → 64% |
+| 45892915 | 709 → 64% | 1,611 → **80%** | 442 → 79% |
+
+The test is on *new territory reached*, not geometric length: a short branch into
+unclaimed volume survives, a long one shadowing already-covered ground does not.
+Length alone cannot express that, which is why `swc_simplify.prune_twigs` exists
+but is off by default.
+
+### It is not a tuning knob
+
+`min_length` of 5, 10, 20 and 40 give near-identical output (352/352/352 nodes on
+body 45813451). Un-invalidated length is bimodal — a branch either covers real
+volume or nearly none — so the threshold separates cleanly instead of trading
+off. NeuTu's default of 10 is fine; do not sweep it.
+
+### One deliberate departure
+
+NeuTu **stops extraction globally** once the best remaining branch is short. This
+port *rejects and continues* — the branch is skipped but its territory is still
+invalidated. NeuTu can afford the global stop because `extractLongestPath` picks
+the target maximising un-invalidated length; we pick max-DAF via
+`CachedTargetFinder`, and a global stop on a weaker target selector risks
+truncating a live arbor.
+
+The cost is that we still trace ~2× NeuTu's cable, concentrated in thick bodies
+(45892915: 1,611 nodes vs 442). **This is the remaining lever** if node count must
+come down further — implement target selection by un-invalidated length, then the
+global stop becomes safe. It would cost fill, since that extra cable is currently
+buying the +3.2 points.
 
 ## Fallback — the NeuTu plugin
 
@@ -112,13 +287,46 @@ reimplementation gets validated.
 
 ---
 
+## Integration — the remaining work
+
+Not yet done, and not a drop-in. Production skeletonization is **block-first**:
+stage 1 skeletonizes each 256³ block with kimimaro's `fix_borders=True` so
+fragments meet at seams, stage 2 fuses each body's fragments
+(`join_close_components` + `postprocess`). `neutu_trace.skeletonize` is
+**whole-body** — it computes an EDT and a parent field over one connected
+component at a time, which is exactly the per-body cropping the block-first
+design exists to avoid (see `SkeletonConfig`: the OOM risk is bounding-box
+*extent*, not voxel count).
+
+Two routes, in increasing order of work:
+
+1. **`swc_simplify` alone, in stage 2.** The reduction passes are
+   tool-independent — they take any `(vertices, radii, edges)`. Applying them to
+   the *current* kimimaro fusion output would capture a large part of the node
+   win with no change to tracing and no memory risk. Cheapest useful step.
+2. **Replace the tracer.** Needs a block-first story for `min_length`, and that
+   is the hard part: un-invalidated length is measured against the *whole*
+   component, so a branch crossing a block boundary looks short in each block
+   independently. Rejecting per block would delete exactly the long-range cable
+   the pipeline cares most about. Either trace per body where extent allows, or
+   defer branch rejection to stage 2 on the fused skeleton — where it is
+   post-hoc, and therefore the weaker geometric form.
+
 ## Watch out for
 
 - **Always pass `edges` to `skelmetrics`.** Scoring vertex spheres instead of swept
   capsules reversed the tool ranking once already.
 - **Don't port the `−0.5` radius correction.** Established harmful at these radii.
+- **Iterate connected components.** A single-root TEASAR trace covers exactly one,
+  and these bodies are genuinely fragmented. It fails as a plausible-looking low
+  coverage number, not as an error.
+- **Set background to `inf` in any new cost function.** `dijkstra3d` takes a
+  weight field with no mask, so a cost that sends background to 0 makes empty
+  space the cheapest thing to cross.
 - **`anisotropy=(8,8,8)` in `SkeletonConfig` is a placeholder.** Scale 2 is
   32 nm/voxel. `const` is in nm; get the conversion right before comparing settings.
+  (The driver overrides it from the source metadata — the published radii are
+  correct — but the default on its own would be wrong by 4×.)
 - **NeuTu's EDT is not anisotropy-aware** (anisotropy enters only via Dijkstra step
   lengths). Fine for isotropic data; a real problem otherwise.
 - **The mask is not ground truth.** Check the thickness map before attributing a bad
