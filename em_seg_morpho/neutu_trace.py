@@ -111,6 +111,15 @@ MIN_LENGTH = 10.0
 # it sound was implemented, measured not to help, and removed; the numbers and
 # the method are in docs/skeletonization-plan.md and commit 83d1356.
 PATIENCE = None
+
+# How the path cost is applied. "voxel" uses dijkstra3d's per-voxel field, whose
+# effective edge cost is d*f(destination). "edge" builds the graph explicitly and
+# uses NeuTu's symmetric d*[f(u)+f(v)] via scipy. They agree only for uniform step
+# lengths; measured inside real bulbs the per-voxel routes cost ~10% more under
+# NeuTu's own cost and never matched (0/16). See docs/skeletonization-plan.md.
+COST = "voxel"
+
+
 def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
     """NeuTu's local path cost ``1/(1 + r²)``, on a **voxel-unit** DBF.
 
@@ -142,8 +151,8 @@ def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
 
 def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 const: float | None = None, min_length: float = MIN_LENGTH,
-                patience: int | None = PATIENCE, dust_threshold: int = 0,
-                connectivity: int = 26, max_paths=None):
+                patience: int | None = PATIENCE, cost: str = COST,
+                dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
     Returns an ``osteoid.Skeleton`` whose ``vertices`` are zyx voxel coordinates
@@ -195,7 +204,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
             (cc[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] == label).astype(np.uint8))
         skel = _trace_component(sub, scale=scale, const=const,
                                 min_length=min_length, patience=patience,
-                                max_paths=max_paths)
+                                cost=cost, max_paths=max_paths)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -208,7 +217,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
 
 
 def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
-                     patience=PATIENCE, max_paths=None, dbf=None):
+                     patience=PATIENCE, cost=COST, max_paths=None, dbf=None):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -221,7 +230,7 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
         dbf = edt.edt(labels, anisotropy=(1, 1, 1), black_border=False, order="F")
     DBF = np.asfortranarray(dbf)
 
-    root = _find_root(labels)
+    root = _find_root(labels, DBF)
     if root is None:
         return Skeleton()
 
@@ -237,7 +246,30 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
     target_finder = kimimaro.skeletontricks.CachedTargetFinder(labels, DAF)
     del DAF
 
-    parents = dijkstra3d.parental_field(neutu_pdrf(DBF), root)
+    w = neutu_pdrf(DBF)
+    if cost == "edge":
+        pred, inside_idx, pos_map, src_c = _edge_weighted_parents(labels, w, root)
+
+        def path_to(t):
+            t = tuple(int(v) for v in t)
+            tf = int(pos_map[t[0] + labels.shape[0]
+                             * (t[1] + labels.shape[1] * t[2])])
+            if tf < 0:
+                return np.zeros((0, 3), dtype=np.uint32)
+            # The source's predecessor is -9999, identical to "unreachable". Reading
+            # it as failure returned an EMPTY path, which invalidates nothing, so
+            # `remaining` never fell and the loop spun toward max_paths -- two hours
+            # of CPU on one body before this was caught.
+            if tf == src_c:
+                return np.array([t], dtype=np.uint32)
+            if pred[tf] < 0:
+                return np.zeros((0, 3), dtype=np.uint32)
+            return _path_from_predecessors(pred, inside_idx, labels.shape, tf)
+    else:
+        parents = dijkstra3d.parental_field(w, root)
+
+        def path_to(t):
+            return dijkstra3d.path_from_parents(parents, tuple(int(v) for v in t))
 
     paths = []
     remaining = int(np.count_nonzero(labels))
@@ -247,9 +279,18 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
     misses = 0
     while (remaining > 0 or pending) and len(paths) < max_paths:
         target = pending.pop() if pending else target_finder.find_target(labels)
-        path = dijkstra3d.path_from_parents(parents, target)
-        keep = len(path) > 0
-        if keep and min_length > 0:
+        path = path_to(target)
+        if not len(path):
+            # No path to this target: retire the voxel anyway, or find_target keeps
+            # handing it back and the loop makes no progress.
+            labels[tuple(int(v) for v in target)] = 0
+            remaining -= 1
+            misses += 1
+            if patience is not None and misses >= patience:
+                break
+            continue
+        keep = True
+        if min_length > 0:
             keep = _uninvalidated_length(path, labels) >= min_length
         if remaining > 0:
             # Invalidate even for a rejected branch: the territory is covered
@@ -324,12 +365,129 @@ def _uninvalidated_length(path, labels):
     return float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
 
 
-def _find_root(labels):
-    """TEASAR root: the point farthest (geodesically) from an arbitrary voxel."""
+def _edge_weighted_parents(labels, weight, root):
+    """Parent field under NeuTu's **symmetric edge** cost ``d·[f(u) + f(v)]``.
+
+    ``dijkstra3d`` cannot express this — every one of its entry points takes a
+    per-voxel field, so the edge cost it minimises is effectively
+    ``Σ dᵢ·f(vᵢ₊₁)``. Those two agree only when every step has the same length:
+    ``Σ dᵢ(fᵢ + fᵢ₊₁)`` telescopes to ``2·Σ dᵢfᵢ₊₁`` plus fixed endpoint terms
+    exactly when ``dᵢ`` is constant. A tube satisfies that; a bulb, with 1, √2 and
+    √3 interleaved, does not. **Measured inside real bulbs: 0 of 16 paths matched,
+    and our per-voxel routes cost ~10% more under NeuTu's own cost, straying up to
+    12 voxels.**
+
+    So this builds the 26-connected graph over the component explicitly and hands it
+    to ``scipy.sparse.csgraph.dijkstra``, which does take edge weights. Roughly 26M
+    edges and ~320 MB of CSR for a 10⁶-voxel component — affordable, C-implemented,
+    and no new build dependency.
+
+    Returns ``(predecessor, inside, pos, src)`` in the component's compact index
+    space; use :func:`_path_from_predecessors` to walk it. **``src`` must be
+    returned and checked separately**: scipy marks the source with ``-9999``, the
+    same sentinel it uses for unreachable nodes, so a source-is-target query is
+    indistinguishable from a failure unless you know which index the source is.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    shape = labels.shape
+    flat = labels.reshape(-1, order="F")
+    inside = np.flatnonzero(flat != 0)
+    pos = np.full(flat.size, -1, dtype=np.int64)
+    pos[inside] = np.arange(len(inside))
+    f = np.asarray(weight).reshape(-1, order="F")[inside].astype(np.float64)
+    cz, cy, cx = _unflatten_np(inside, shape)
+
+    # 13 of the 26 offsets; the transpose supplies the other half
+    offsets = [(dz, dy, dx) for dz in (0, 1) for dy in (-1, 0, 1) for dx in (-1, 0, 1)
+               if (dz, dy, dx) > (0, 0, 0)]
+    us, vs, ws = [], [], []
+    for dz, dy, dx in offsets:
+        nz, ny, nx = cz + dz, cy + dy, cx + dx
+        ok = ((nz < shape[0]) & (ny >= 0) & (ny < shape[1])
+              & (nx >= 0) & (nx < shape[2]))
+        if not ok.any():
+            continue
+        nbr = pos[nz[ok] + shape[0] * (ny[ok] + shape[1] * nx[ok])]
+        good = nbr >= 0
+        if not good.any():
+            continue
+        u = np.flatnonzero(ok)[good]
+        v = nbr[good]
+        d = float(np.sqrt(dz * dz + dy * dy + dx * dx))
+        us.append(u)
+        vs.append(v)
+        ws.append(d * (f[u] + f[v]))
+
+    n = len(inside)
+    if not us:
+        return np.full(n, -9999, dtype=np.int64), inside, pos, -1
+    u = np.concatenate(us)
+    v = np.concatenate(vs)
+    w = np.concatenate(ws)
+    g = coo_matrix((w, (u, v)), shape=(n, n)).tocsr()
+    g = g + g.T                                  # undirected
+    src = int(pos[root[0] + shape[0] * (root[1] + shape[1] * root[2])])
+    # directed=True: the graph is already symmetric from g + g.T, and letting scipy
+    # symmetrise again is 2x slower for the same answer (0.05s vs 0.11s measured).
+    _, pred = dijkstra(g, directed=True, indices=src, return_predecessors=True)
+    return pred.astype(np.int64), inside, pos, src
+
+
+def _path_from_predecessors(pred, inside, shape, target_flat):
+    """Walk a scipy predecessor array back to the source; returns zyx uint32."""
+    cur = int(target_flat)
+    out = [cur]
+    while True:
+        nxt = int(pred[cur])
+        if nxt < 0:
+            break
+        out.append(nxt)
+        cur = nxt
+        if len(out) > len(inside):               # cycle guard
+            break
+    z, y, x = _unflatten_np(inside[np.array(out[::-1])], shape)
+    return np.stack([z, y, x], axis=1).astype(np.uint32)
+
+
+def _unflatten_np(flat, shape):
+    """Fortran-order flat index -> (z, y, x), vectorised."""
+    nz, ny, _ = shape
+    z = flat % nz
+    rest = flat // nz
+    return z, rest % ny, rest // ny
+
+
+def _find_root(labels, dbf=None):
+    """TEASAR root: the point farthest (geodesically) from the **thickest** voxel.
+
+    NeuTu's two-pass root selection (``m_rebase``, on in our config): seed at
+    ``Stack_Max(tmpdist)`` — the largest distance-transform value — grow, take the
+    longest path, and re-seed at its far end
+    (``gui/zstackskeletonizer.cpp:341-359``). The structure here already matched;
+    only the seed did not. We used ``first_label``, i.e. whichever voxel came first
+    in memory order.
+
+    Why it matters: the root determines the entire parent tree, so it determines
+    every path and every branch point. An arbitrary seed makes the whole skeleton
+    depend on array layout, which is also why it was worth fixing regardless of
+    whether it closes the gap to NeuTu — it removes a dependence on something
+    meaningless.
+
+    Pass the **raw** EDT, before ``zero2inf``: afterwards background is ``inf`` and
+    the argmax lands outside the object.
+    """
     import dijkstra3d
     import kimimaro.skeletontricks
 
-    seed = kimimaro.skeletontricks.first_label(labels)
+    if dbf is not None and np.isfinite(dbf).any():
+        seed = np.unravel_index(int(np.argmax(dbf)), dbf.shape)
+        seed = tuple(int(v) for v in seed)
+        if not labels[seed]:                    # degenerate: fall back
+            seed = kimimaro.skeletontricks.first_label(labels)
+    else:
+        seed = kimimaro.skeletontricks.first_label(labels)
     if seed is None:
         return None
     _, farthest = dijkstra3d.euclidean_distance_field(

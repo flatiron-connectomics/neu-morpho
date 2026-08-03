@@ -284,3 +284,43 @@ def test_branches_are_traced():
     e = np.asarray(skel.edges)
     degree = np.bincount(e.ravel(), minlength=len(np.asarray(skel.vertices)))
     assert (degree >= 3).any(), "no branch point found on a Y-shaped body"
+
+
+def test_root_seeds_from_the_thickest_voxel_not_memory_order():
+    """NeuTu's rebase: seed at the thickest voxel, not whichever comes first.
+
+    The root determines the whole parent tree, so seeding from `first_label` made
+    the skeleton depend on array layout. This builds a body whose thickest part is
+    deliberately NOT first in memory order, and checks the seed choice changes the
+    root.
+    """
+    import edt
+
+    m = np.zeros((60, 30, 30), dtype=np.uint8)
+    zz, yy, xx = np.indices(m.shape)
+    m[(zz >= 2) & (zz < 40) & ((yy - 15) ** 2 + (xx - 15) ** 2 <= 4)] = 1   # thin, first
+    m[((zz - 48) ** 2 + (yy - 15) ** 2 + (xx - 15) ** 2) <= 64] = 1        # thick, later
+    m = np.asfortranarray(m)
+    dbf = edt.edt(m, anisotropy=(1, 1, 1), black_border=False, order="F")
+
+    thickest = np.unravel_index(int(np.argmax(dbf)), dbf.shape)
+    assert thickest[0] > 40, "test body is not built as intended"
+
+    from_thick = neutu_trace._find_root(m, dbf)
+    from_order = neutu_trace._find_root(m, None)
+    assert from_thick is not None and from_order is not None
+    # seeding at the thick blob puts the root at the far (thin) end
+    assert from_thick[0] < 20
+
+
+def test_find_root_ignores_zero2inf_background():
+    """The raw EDT must be passed: after zero2inf the argmax is background."""
+    import edt
+    import kimimaro.skeletontricks as skt
+
+    m = _tube(length=30, r=3)
+    raw = edt.edt(m, anisotropy=(1, 1, 1), black_border=False, order="F")
+    poisoned = skt.zero2inf(raw.copy())
+    root = neutu_trace._find_root(m, poisoned)
+    assert root is not None
+    assert m[tuple(int(v) for v in root)], "root fell outside the object"

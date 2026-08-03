@@ -453,6 +453,20 @@ reimplementation gets validated.
 
 ## Integration — the remaining work
 
+**Wanted for the production run: `cost="edge"` exposed in `SkeletonConfig`**
+(requested 2026-08-03, conditional on the 12-body numbers holding up and the
+rendered figure looking right). Deliberately *not* added yet: `SkeletonConfig`
+configures the kimimaro block-first stages, and `neutu_trace` is not wired into
+them, so the field would be a knob nothing reads. Add it with the tracer swap.
+
+**Check memory before setting it.** `cost="edge"` builds an explicit 26-connected
+graph, so peak RSS scales with edge count: 1.9 → 2.9 GB on body 45892915
+(568 K voxels), extrapolating to ~4–5 GB on a 10⁶-voxel component. At 48 dask
+workers that is ~240 GB, so it needs either a voxel-count cap that falls back to
+`"voxel"`, or fewer workers. This may be moot under block-first, where per-body
+components inside a 256³ block are far smaller than whole-body ones — but it has
+not been measured there.
+
 Not yet done, and not a drop-in. Production skeletonization is **block-first**:
 stage 1 skeletonizes each 256³ block with kimimaro's `fix_borders=True` so
 fragments meet at seams, stage 2 fuses each body's fragments
