@@ -24,11 +24,9 @@ How this differs from kimimaro
 *global* maximum radius, plus a small DAF term as a "trickle of gradient so open
 spaces don't collapse". NeuTu has no such term and none is added here.
 
-**Invalidation.** NeuTu uses ``EDT + 2`` voxels
+**Invalidation.** ``EDT + 2`` voxels, NeuTu's own value
 (``maskExpansionRadius``, ``gui/zspgrowparser.cpp:296``), against kimimaro's
-production ``1.5·DBF + 4.69``. **We default to ``EDT + 8``** — see
-:data:`INVALIDATION_CONST`, which explains why that is compensation for a
-different target-selection rule rather than a porting error.
+production ``1.5·DBF + 4.69``.
 
 **No soma mode.** kimimaro detects somata and specially handles the root. NeuTu
 has no equivalent, and Megaphragma is ~97% somaless.
@@ -76,36 +74,22 @@ import numpy as np
 INVALIDATION_SCALE = 1.0
 NEUTU_CONST = 2.0
 
-# What we actually default to, and it is NOT NeuTu's value.
+# We default to NeuTu's own value. An earlier revision defaulted to 8.0 as
+# "compensation for weaker target selection"; that was wrong, and the story is
+# worth keeping because the evidence for it looked strong.
 #
-# This is **compensation for weaker target selection, not fidelity.** NeuTu picks
-# the next branch by maximum un-invalidated length, so it extracts the largest new
-# branch first and its invalidation ball consumes the territory that would
-# otherwise resurface as many small branches. We pick by max-DAF
-# (`CachedTargetFinder`), which can start on a short spur, invalidate little, and
-# leave the same ground to be covered by many more paths. A larger ball buys back
-# per path what NeuTu's ordering buys by choosing well.
+# Two bugs made NeuTu's const=2 look like it over-branched by 4x:
+#   1. `_uninvalidated_length` measured uint32 paths with np.diff, which underflows
+#      on any decreasing coordinate and returned ~2.7e11 -- so every
+#      `>= min_length` test passed and branch rejection never happened at all.
+#   2. The extraction loop had no progress guarantee, so it re-extracted one
+#      identical path until it hit max_paths (see the comment at that site).
 #
-# Measured against NeuTu over the 12-body benchmark (median ratios, port:NeuTu):
-#
-#              const=2      const=8
-#   tips        4.07x        1.04x
-#   cable         --         1.06x
-#   nodes         --         0.75x
-#   B->A p90     2.16         2.30      (what we fail to cover -- barely worse)
-#
-# TWO CAVEATS, because a tuned constant is a liability:
-#   1. It is in VOXELS, so it is tied to `skeleton_scale`. At scale 2 (32 nm) this
-#      is EDT + 256 nm; at scale 1 it would be EDT + 128 nm and mean something
-#      different. **Re-sweep it if the scale changes.**
-#   2. 256 nm is large next to a median process radius of ~55-72 nm, so it can
-#      invalidate a genuinely separate neurite running parallel within that
-#      distance. This shows up as rising B->A p90 on the two largest thick bodies
-#      (6308993 3.81 -> 7.23, 45892915 3.74 -> 7.60) and is the strongest argument
-#      for doing the target-selection rewrite instead.
-#
-# Pass `const=NEUTU_CONST` for the mechanically faithful behaviour.
-INVALIDATION_CONST = 8.0
+# With both fixed, const=2 reproduces NeuTu directly -- tip ratio 0.88-1.00, cable
+# 1.05-1.14 -- and const=8 becomes far too aggressive (tip ratio 0.40-0.50,
+# B->A p90 7.9-9.5, i.e. real cable deleted). The lesson: a parameter that
+# "compensates" for a mechanism you have not verified is usually masking a bug.
+INVALIDATION_CONST = NEUTU_CONST
 # NeuTu's `minimalLength`, the branch-rejection threshold, in voxels.
 MIN_LENGTH = 10.0
 # Consecutive rejected branches before extraction stops. NeuTu stops on the
@@ -158,7 +142,7 @@ def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
 
 
 def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
-                const: float = INVALIDATION_CONST, min_length: float = MIN_LENGTH,
+                const: float | None = None, min_length: float = MIN_LENGTH,
                 patience: int | None = PATIENCE, dust_threshold: int = 0,
                 connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
@@ -180,10 +164,13 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
     ``dust_threshold`` drops components smaller than this many voxels. The
     default keeps everything, since a speck still yields a valid one-vertex
     skeleton and dropping cable is the pipeline's decision, not this function's.
+
     """
     import cc3d
     from osteoid import Skeleton
 
+    if const is None:
+        const = INVALIDATION_CONST
     labels = np.asfortranarray(np.asarray(mask_zyx).astype(np.uint8))
     if not labels.any():
         return Skeleton()
@@ -271,6 +258,20 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
             invalidated, labels = \
                 kimimaro.skeletontricks.roll_invalidation_ball_inside_component(
                     labels, DBF, scale, const, (1, 1, 1), path)
+            # THE PROGRESS GUARANTEE, and it is load-bearing.
+            # roll_invalidation_ball_inside_component erases voxels *around* the
+            # path but never the path's own voxels (verified: 307 of 307 left
+            # valid), and CachedTargetFinder does not remember what it has already
+            # returned. So the farthest valid voxel stays valid, find_target hands
+            # back the same target forever, and the loop re-extracts one identical
+            # path until it hits max_paths. kimimaro escapes this only because its
+            # default fix_branching=True rewrites `parents` to 0 along each path,
+            # which reroutes the next railroad() call; this port uses
+            # parental_field, so it has no such escape and must retire the path
+            # explicitly.
+            zs, ys, xs = path[:, 0], path[:, 1], path[:, 2]
+            remaining -= int(np.count_nonzero(labels[zs, ys, xs]))
+            labels[zs, ys, xs] = 0
             remaining -= invalidated
         if keep:
             paths.append(path)
@@ -306,7 +307,13 @@ def _uninvalidated_length(path, labels):
 
     ``path`` runs root-end first, so the un-invalidated stretch is the **tail**:
     take the trailing run of still-valid voxels and measure it.
+
+    **The float cast is load-bearing.** ``dijkstra3d`` returns paths as ``uint32``,
+    so ``np.diff`` on the raw array underflows at every step where a coordinate
+    decreases and yields ~2**32 — making this return ~2.7e11 and every
+    ``>= min_length`` test pass. That silently disabled branch rejection.
     """
+    path = np.asarray(path)
     valid = labels[path[:, 0], path[:, 1], path[:, 2]] != 0
     rev = valid[::-1]
     if not rev[0]:                       # endpoint already covered -> nothing new
@@ -314,7 +321,7 @@ def _uninvalidated_length(path, labels):
     n_tail = len(rev) if rev.all() else int(np.argmin(rev))
     if n_tail < 2:
         return 0.0
-    tail = path[len(path) - n_tail:]
+    tail = path[len(path) - n_tail:].astype(np.float64)
     return float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
 
 

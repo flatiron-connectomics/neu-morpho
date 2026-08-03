@@ -144,10 +144,21 @@ def run_one(rec: dict, out_dir: str, voxel_nm: float, neutu_bin: str,
     return res
 
 
-def _score(mask, zyx, radii, edges, seconds, voxel_nm, path=""):
+def _score(mask, zyx, radii, edges, seconds, voxel_nm, path="", reference=None):
+    """Score one skeleton. ``reference`` is (zyx, radii, edges) to agree with.
+
+    Coverage and spill are recorded but are **not** the objective — coverage is
+    confounded by branch count and rewards inventing neurites, and on a dense
+    segmentation spill cannot separate reclaiming a false split from trespassing.
+    ``agree_*`` is what to optimise; see ``skelmetrics.agreement``.
+    """
     s = skelmetrics.score(mask, zyx, radii, edges)          # edges: never omit
     d = skelmetrics.radius_vs_edt(mask, zyx, radii)
-    return {
+    ag = {}
+    if reference is not None:
+        a = skelmetrics.agreement(zyx, radii, edges, *reference)
+        ag = {f"agree_{k}": round(v, 4) for k, v in a.items()}
+    return {**ag,
         "nodes": s["nodes"], "edges": int(len(edges)),
         "coverage": round(s["coverage"], 4), "spill": round(s["spill"], 4),
         "nodes_per_1k_covered": round(s["nodes_per_1k_covered"], 3),

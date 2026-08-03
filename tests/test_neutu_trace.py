@@ -154,25 +154,17 @@ def test_empty_mask_returns_empty_skeleton():
     assert len(np.asarray(skel.vertices)) == 0
 
 
-def test_default_const_is_documented_as_non_neutu():
-    """The default invalidation is deliberately NOT NeuTu's, and must stay labelled.
+def test_default_invalidation_is_neutus_own_value():
+    """The default must stay at NeuTu's EDT+2, not a compensating constant.
 
-    ``INVALIDATION_CONST`` compensates for our weaker target selection; NeuTu's
-    own value is ``NEUTU_CONST``. Conflating them would make the module claim a
-    fidelity it does not have, and would hide that the constant is tied to
-    ``skeleton_scale`` and needs re-sweeping if that changes.
+    A previous revision defaulted to 8.0 to "compensate for weaker target
+    selection". That was masking two bugs (the uint32 length underflow and the
+    missing loop progress guarantee); with those fixed, 2.0 reproduces NeuTu and
+    8.0 deletes real cable. If this assertion ever fails, check for a
+    reintroduced bug before accepting the new constant.
     """
     assert neutu_trace.NEUTU_CONST == 2.0
-    assert neutu_trace.INVALIDATION_CONST != neutu_trace.NEUTU_CONST
-    assert "compensation" in neutu_trace.__doc__ or True   # rationale lives inline
-
-
-def test_neutu_faithful_const_traces_more_branches():
-    """Sanity for the mechanism: NeuTu's smaller ball leaves more to cover."""
-    m = _tube(length=50, r=4, bend=True)
-    faithful = neutu_trace.skeletonize(m, const=neutu_trace.NEUTU_CONST)
-    ours = neutu_trace.skeletonize(m, const=neutu_trace.INVALIDATION_CONST)
-    assert len(np.asarray(faithful.vertices)) >= len(np.asarray(ours.vertices))
+    assert neutu_trace.INVALIDATION_CONST == neutu_trace.NEUTU_CONST
 
 
 def test_tighter_invalidation_yields_more_vertices():
@@ -200,7 +192,10 @@ def test_all_connected_components_are_traced():
     m[((zz >= 20) & (zz < 55) & ((yy - 25) ** 2 + (xx - 10) ** 2 <= 16))] = 1
     m = np.asfortranarray(m)
 
-    skel = neutu_trace.skeletonize(m)
+    # min_length=0: this test is about component iteration, not branch rejection.
+    # At the default threshold the 6-voxel cube is legitimately dropped for being
+    # shorter than minimalLength, which would mask the bug this test guards.
+    skel = neutu_trace.skeletonize(m, min_length=0.0)
     v = np.asarray(skel.vertices).astype(int)
     assert len(v) > 0
     in_small = ((v[:, 0] < 15)).sum()
@@ -256,6 +251,23 @@ def test_min_length_is_measured_on_uninvalidated_length_not_geometry():
 
     labels_all = np.zeros((12, 2, 2), dtype=np.uint8)
     assert neutu_trace._uninvalidated_length(path, labels_all) == 0.0
+
+
+def test_uninvalidated_length_survives_uint32_paths():
+    """dijkstra3d returns uint32 paths; np.diff on them underflows.
+
+    Any step where a coordinate DECREASES wraps to ~2**32, so the length came
+    back as ~2.7e11 and every `>= min_length` test passed — branch rejection was
+    silently disabled. The earlier version of this test used an int64 path and a
+    monotonically increasing one, so it missed both halves of the bug.
+    """
+    labels = np.ones((12, 12, 12), dtype=np.uint8)
+    down = np.array([[9, 5, 5], [8, 5, 5], [7, 5, 5], [6, 5, 5]], dtype=np.uint32)
+    assert neutu_trace._uninvalidated_length(down, labels) == pytest.approx(3.0)
+
+    diag = np.array([[9, 9, 5], [8, 8, 5], [7, 7, 5]], dtype=np.uint32)
+    assert neutu_trace._uninvalidated_length(diag, labels) == pytest.approx(
+        2 * np.sqrt(2))
 
 
 def test_branches_are_traced():

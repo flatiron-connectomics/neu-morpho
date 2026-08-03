@@ -4,28 +4,37 @@ Background and evidence: `docs/skeletonization-comparison.md`. Read that first �
 in particular the "Corrections" section, which lists conclusions already established
 as wrong.
 
-**Status. All five steps are done, and the output now matches NeuTu's.**
+**Status. All five steps are done, at NeuTu's own parameter values.**
 `em_seg_morpho/neutu_trace.py` (tracing) plus `em_seg_morpho/swc_simplify.py`
 (node reduction), scored by `skelmetrics.agreement` over the 12-body benchmark:
 
 | median ratio, port : NeuTu | |
 |---|---:|
-| tips | **1.04×** |
-| cable | 1.06× |
+| tips | **1.01×** (0.87–1.16 per body) |
+| cable | 1.07× |
 | nodes | 0.75× |
-| centreline distance A→B / B→A | 0.82 / 0.78 voxels |
+| centreline distance A→B / B→A | 0.83 / 0.79 voxels |
 
-Sub-voxel centreline agreement, equivalent branching, fewer nodes. Against
-kimimaro production — what ships today — it is roughly **2× fewer nodes and
-10× faster**.
+Sub-voxel centreline agreement and matched branching, from **NeuTu's own
+`scale=1, const=2, minimalLength=10`** — no tuned constant, no target-selection
+rewrite. Against kimimaro production, what ships today, roughly **2× fewer nodes
+and 10× faster**.
 
-**Do not read the fill/spill numbers in the comparison doc as a score.** Fill is
-confounded by branch count, so it rewards inventing neurites; an earlier revision
-of this plan claimed a fill win that was exactly that artefact. See the
-Corrections section there.
+**Two withdrawn conclusions**, both from this branch, both worth reading before
+trusting any number here:
 
-**One mechanism is still not NeuTu's** — target selection — and it is papered
-over by a tuned constant (`const=8` rather than NeuTu's 2). See step 5.
+- **Fill/spill are not scores.** Fill is confounded by branch count, so it rewards
+  inventing neurites. An earlier revision claimed a fill win that was exactly that
+  artefact. See the comparison doc's Corrections.
+- **The `const=8` "compensation" was masking two bugs.** An earlier revision
+  defaulted to `const=8` and argued at length that it compensated for
+  target-selection ordering. Both the number and the mechanism were wrong — see
+  step 5.
+
+**No mechanism is now known to be missing.** Target selection is still max-DAF
+rather than NeuTu's max-un-invalidated-length, but at these settings that no
+longer costs measurable agreement, so the rewrite has no justification. What
+remains is **integration** (see below).
 
 Step 4 closed with no code. What remains is **wiring it into the pipeline** —
 see "Integration" at the bottom, which is not a small change.
@@ -287,33 +296,43 @@ truncates live arbor — B→A p90, i.e. what we fail to cover, on three bodies:
 
 So `patience` defaults to `None` (off).
 
-**Selection order, not the invalidation radius, drives branch count.** With
-NeuTu's own `const=2` the port carried a **4.07× median tip ratio**. That is not a
-porting error in the invalidation — NeuTu's radius really is `EDT + 2`
-(`maskExpansionRadius = 2.0`, `DistanceWeight(v) = sqrt(v)`, both confirmed in
-source). It is that NeuTu extracts the largest new branch first, so one
-invalidation ball consumes territory that otherwise resurfaces as many small
-branches.
+### ~~Selection order drives branch count~~ — WITHDRAWN, it was two bugs
 
-**The shipped workaround is `const = 8`**, which buys per path what NeuTu's
-ordering buys by choosing well. Validated on all 12 bodies:
+An earlier revision recorded that NeuTu's own `const=2` gave a **4.07× median tip
+ratio**, concluded that selection *ordering* was responsible, and shipped
+`const=8` as compensation with a table showing it reaching 1.04×. **All of that
+was an artefact.** Two bugs, both silent:
 
-| median ratio, port : NeuTu | const=2 | const=8 |
-|---|---:|---:|
-| tips | 4.07× | **1.04×** |
-| cable | — | 1.06× |
-| nodes | — | 0.75× |
-| B→A p90 | 2.16 | 2.30 |
+1. **`_uninvalidated_length` measured `uint32` paths with `np.diff`**, which
+   underflows on any decreasing coordinate and returned ~2.7e11. Every
+   `>= min_length` test passed, so **branch rejection never ran at all**. The unit
+   test missed it by using an int64, monotonically-increasing path.
+2. **The extraction loop had no progress guarantee.**
+   `roll_invalidation_ball_inside_component` erases voxels *around* a path but
+   never the path's own voxels (measured: 307 of 307 left valid), and
+   `CachedTargetFinder` does not remember what it returned — so `find_target`
+   handed back the same voxel forever and the loop re-extracted one identical path
+   until it hit `max_paths`. kimimaro escapes this only because its default
+   `fix_branching=True` rewrites `parents` along each path; a `parental_field` port
+   has no such escape and must retire the path explicitly.
 
-Per-body tip ratio lands in 0.87–1.23×. See `INVALIDATION_CONST` for the two
-caveats — the constant is in voxels so it is tied to `skeleton_scale`, and at
-256 nm it can invalidate a genuinely separate neurite running parallel, which
-shows up as B→A p90 roughly doubling on the two largest thick bodies.
+With both fixed, **NeuTu's `const=2` reproduces NeuTu** (tip 1.01× median) and
+`const=8` over-prunes (tip 0.40–0.50, real cable deleted). The default is back to
+`NEUTU_CONST`, with a test pinning it and a comment saying to look for a
+reintroduced bug if it ever needs raising.
 
-**Whether to do the rewrite** (target selection by un-invalidated length, via
-pointer-jumping over the parent field, after which the global stop becomes sound)
-now rests on removing the tuned constant and recovering that thick-body p90 — not
-on branch count, which `const=8` already matches.
+The `patience` finding above still stands — it was measured before these fixes but
+re-checked after, and a global stop on max-DAF selection still truncates arbor.
+
+**The rewrite is unjustified.** Its entire case was closing a 4× tip gap that does
+not exist. A greedy path-reselection implementation was written and then removed:
+with the bugs fixed it measured *worse* (tip 5.9× and 21.9×), because its first
+pass runs at `min_length=0` by design.
+
+**The generalisable lesson**: a parameter that compensates for a mechanism you have
+not directly verified is usually masking a bug. The compensating constant survived
+several rounds of scrutiny, a 12-body validation, and a figure, because every
+measurement was downstream of the same two defects.
 
 ## Fallback — the NeuTu plugin
 

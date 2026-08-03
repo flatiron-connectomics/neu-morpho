@@ -99,11 +99,25 @@ difference being a slightly more generous crop.
 
 | | kimimaro production | NeuTu minlen=10 | port |
 |---|---:|---:|---:|
-| median nodes | 3,195 | **912** | 1,417 |
+| median nodes | 3,195 | 912 | **686** |
+| median tip ratio vs NeuTu | — | 1.00× | **1.01×** |
+| median cable ratio vs NeuTu | — | 1.00× | 1.07× |
+| median centreline dist. to NeuTu | — | — | 0.83 vox |
 | median radius error | 0.00 vox | −0.50 vox | 0.00 vox |
-| total time, 12 bodies | 1,703 s | **83 s** | 147 s |
-| median fill *(see below)* | 68% | 71% | 75% |
-| median spill *(see below)* | 8% | 17% | 13% |
+| total time, 12 bodies | 1,703 s | **83 s** | 99 s |
+
+The port reproduces NeuTu's branching from **NeuTu's own `scale=1, const=2,
+minimalLength=10`** — no tuned constant. Per-body tip ratio 0.87–1.16×, cable
+1.03–1.24×. Radii remain exact inscribed radii (median error 0.00 voxels).
+
+**A previous revision of this table reported `const=8` and a 1.04× tip ratio.**
+That was withdrawn: it compensated for two bugs (a `uint32` underflow that
+disabled branch rejection entirely, and a missing loop progress guarantee), and
+with those fixed `const=8` deletes real cable. The full account is in step 5 of
+`skeletonization-plan.md`, kept because the wrong conclusion was well-evidenced
+and survived a 12-body validation.
+
+**Fill is deliberately absent from that table** — see below.
 
 ### Read fill and spill as diagnostics, not as scores
 
