@@ -283,6 +283,11 @@ def _main(args) -> int:
     log.info("stages=%s roi=%s occupancy=%s", stages, roi_base,
              f"scale {args.occupancy_scale} dilate {args.occupancy_dilate}"
              if occ else "off")
+    # The tracer decides what the skeletons ARE, so it belongs in the log and not
+    # only in run_plan.json -- a log is what you have when diagnosing an old run.
+    if "skel" in stages:
+        log.info("tracer        = %s%s", args.tracer,
+                 f" (cost={args.neutu_cost})" if args.tracer == "neutu" else "")
     log.info("dst (volume)  = %s", dst)
     log.info("work dir      = %s", work)
     if args.dry_run:
