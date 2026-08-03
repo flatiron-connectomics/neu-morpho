@@ -451,7 +451,54 @@ reimplementation gets validated.
 
 ---
 
+## Matching NeuTu: where it ends
+
+The port matches NeuTu on **every structural property that has been measured**:
+
+| | NeuTu | port |
+|---|---|---|
+| tips | — | 1.00× |
+| cable | — | 1.04–1.05× |
+| branch points / mean degree / max | 66 / 3.02 / 4 | 66 / 3.02 / 4 |
+| bulb components / largest share | 13 / 87.5% | 15 / 86.9% |
+| cable outside the mask, bulbs | 1.09% | 0.08% |
+| centreline distance, outside bulbs | — | sub-voxel, often coincident |
+
+What remains is **route choice through segmentation noise inside bulbs** — the two
+thread the same noisy volume differently. Neither is closer to a real structure,
+because in those regions the mask does not contain one. There is no measurement
+left that ranks them and no mechanism left that is known to be missing.
+
+### Five hypotheses that a figure suggested and a measurement refuted
+
+Recorded because the pattern cost more than any individual error, and the next
+person will be tempted the same way. **Projections and slabs compress away the
+dimension the story depends on**, so they generate mechanism explanations that feel
+compelling and do not survive checking:
+
+1. *Target-selection ordering explains a 4× tip gap.* No — two bugs did (uint32
+   underflow disabling branch rejection, and a loop with no progress guarantee).
+2. *`const=8` compensates for weaker selection.* No — it was masking those bugs.
+   NeuTu's own `const=2` matches once they are fixed.
+3. *The star contraction in `_contract` invents shortcut edges.* No — 0.02–0.06% of
+   bulb cable outside the mask, worst edge 0.4–1.0 voxels.
+4. *Branch points sit off-centre because of the attachment rule.* No — the raw
+   trace already matched NeuTu exactly (66 / 3.02 / 4). `region_sample` was
+   collapsing them downstream.
+5. *NeuTu has a bulb trunk we lack.* No — both have one dominant component holding
+   63–88% of bulb cable. The stubs were a slab artefact.
+
+**Before attributing a visual difference to a mechanism, measure the mechanism.**
+
 ## Integration — the remaining work
+
+**Gap-bridging (`reconnect`, `maximalDistance=50`) is a product decision, not a
+fix.** NeuTu joins disconnected roots within 50 voxels (1,600 nm at 32 nm), which
+is what bridges visible mask gaps. It is *not* needed to match NeuTu's structure —
+see above — so adopt it only if bridging real segmentation splits is wanted for its
+own sake. Note it directly contradicts this project's existing rule against wide
+joins (CLAUDE.md: a 400 nm split doubled cable_length), so it needs a deliberate
+decision about inventing cable.
 
 **Wanted for the production run: `cost="edge"` exposed in `SkeletonConfig`**
 (requested 2026-08-03, conditional on the 12-body numbers holding up and the
