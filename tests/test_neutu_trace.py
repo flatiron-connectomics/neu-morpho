@@ -324,3 +324,52 @@ def test_find_root_ignores_zero2inf_background():
     root = neutu_trace._find_root(m, poisoned)
     assert root is not None
     assert m[tuple(int(v) for v in root)], "root fell outside the object"
+
+
+def test_attach_at_skeleton_keeps_the_tree_connected():
+    """Truncating at the path mask must not fragment the skeleton.
+
+    The mask is a tube of radius up to 3, so the cut voxel is usually not a vertex
+    of the existing skeleton. Without prepending an anchor, nothing is shared and
+    each branch comes back as its own component.
+    """
+    s = (60, 60, 24)
+    zz, yy, xx = np.indices(s)
+    stem = (zz >= 6) & (zz < 30) & ((yy - 30) ** 2 + (xx - 12) ** 2 <= 9)
+    t = np.clip(zz - 30, 0, None)
+    arm1 = (zz >= 30) & (zz < 54) & ((yy - 30 - t) ** 2 + (xx - 12) ** 2 <= 9)
+    arm2 = (zz >= 30) & (zz < 54) & ((yy - 30 + t) ** 2 + (xx - 12) ** 2 <= 9)
+    m = np.asfortranarray((stem | arm1 | arm2).astype(np.uint8))
+
+    for attach in (False, True):
+        skel = neutu_trace.skeletonize(m, attach_at_skeleton=attach)
+        v = np.asarray(skel.vertices)
+        e = np.asarray(skel.edges)
+        parent = list(range(len(v)))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for a, b in e:
+            ra, rb = find(int(a)), find(int(b))
+            if ra != rb:
+                parent[ra] = rb
+        assert len({find(i) for i in range(len(v))}) == 1, (
+            f"attach_at_skeleton={attach} left the skeleton disconnected")
+
+
+def test_path_mask_radius_is_capped():
+    """The skeleton tube is min(EDT + 1, SKELETON_RADIUS), not the full EDT."""
+    import edt
+
+    m = _tube(length=30, r=8)          # fat tube: EDT well above the cap
+    dbf = edt.edt(m, anisotropy=(1, 1, 1), black_border=False, order="F")
+    pm = np.zeros(m.shape, dtype=bool)
+    centre = np.array([[15, 12, 12]], dtype=np.uint32)
+    neutu_trace._stamp_path_mask(pm, centre, dbf)
+    # a cap of 3 cannot reach 6 voxels away even though the EDT there is large
+    assert not pm[15, 12, 12 + 6]
+    assert pm[15, 12, 12]

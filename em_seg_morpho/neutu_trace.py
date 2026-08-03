@@ -119,6 +119,15 @@ PATIENCE = None
 # NeuTu's own cost and never matched (0/16). See docs/skeletonization-plan.md.
 COST = "voxel"
 
+# NeuTu's `skeletonRadius`, the cap on the skeleton-tube radius used for the path
+# mask (gui/zspgrowparser.cpp:297). The mask radius is min(EDT + 1, this).
+SKELETON_RADIUS = 3.0
+
+# Truncate each new path where it meets the existing skeleton, instead of running
+# it back to the root. This is what places branch points ON the centreline; see
+# _truncate_at_skeleton. NeuTu always does it.
+ATTACH_AT_SKELETON = True
+
 
 def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
     """NeuTu's local path cost ``1/(1 + r²)``, on a **voxel-unit** DBF.
@@ -152,6 +161,7 @@ def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
 def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 const: float | None = None, min_length: float = MIN_LENGTH,
                 patience: int | None = PATIENCE, cost: str = COST,
+                attach_at_skeleton: bool = ATTACH_AT_SKELETON,
                 dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
@@ -204,7 +214,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
             (cc[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] == label).astype(np.uint8))
         skel = _trace_component(sub, scale=scale, const=const,
                                 min_length=min_length, patience=patience,
-                                cost=cost, max_paths=max_paths)
+                                cost=cost, attach_at_skeleton=attach_at_skeleton,
+                                max_paths=max_paths)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -217,7 +228,9 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
 
 
 def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
-                     patience=PATIENCE, cost=COST, max_paths=None, dbf=None):
+                     patience=PATIENCE, cost=COST,
+                     attach_at_skeleton=ATTACH_AT_SKELETON, max_paths=None,
+                     dbf=None):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -271,6 +284,9 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
         def path_to(t):
             return dijkstra3d.path_from_parents(parents, tuple(int(v) for v in t))
 
+    path_mask = (np.zeros(labels.shape, dtype=bool)
+                 if attach_at_skeleton else None)
+    accepted_verts = np.zeros((0, 3), dtype=np.uint32)
     paths = []
     remaining = int(np.count_nonzero(labels))
     if max_paths is None:
@@ -292,6 +308,8 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
         keep = True
         if min_length > 0:
             keep = _uninvalidated_length(path, labels) >= min_length
+        if path_mask is not None:
+            path = _truncate_at_skeleton(path, path_mask, accepted_verts)
         if remaining > 0:
             # Invalidate even for a rejected branch: the territory is covered
             # either way, and skipping it would spin on the same target.
@@ -313,8 +331,11 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
             remaining -= int(np.count_nonzero(labels[zs, ys, xs]))
             labels[zs, ys, xs] = 0
             remaining -= invalidated
-        if keep:
+        if keep and len(path):
             paths.append(path)
+            if path_mask is not None:
+                _stamp_path_mask(path_mask, path, DBF)
+                accepted_verts = np.concatenate([accepted_verts, path], axis=0)
             misses = 0
         else:
             misses += 1
@@ -363,6 +384,75 @@ def _uninvalidated_length(path, labels):
         return 0.0
     tail = path[len(path) - n_tail:].astype(np.float64)
     return float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
+
+
+def _stamp_path_mask(path_mask, path, DBF, cap=SKELETON_RADIUS):
+    """Mark an accepted path into the skeleton tube, radius ``min(EDT+1, cap)``.
+
+    NeuTu's ``m_pathMask``: ``path.sample(ballStack, DistanceWeight)`` then
+    ``addValue(1.0)`` then ``minimizeValue(skeletonRadius=3)``
+    (``gui/zspgrowparser.cpp:333-341``).
+    """
+    r = np.minimum(DBF[path[:, 0], path[:, 1], path[:, 2]] + 1.0, cap)
+    shape = path_mask.shape
+    for k in np.unique(np.maximum(0, np.round(r).astype(int))):
+        sel = np.round(r).astype(int) == k
+        g = np.arange(-k, k + 1)
+        dz, dy, dx = np.meshgrid(g, g, g, indexing="ij")
+        ball = (dz ** 2 + dy ** 2 + dx ** 2) <= k * k
+        oz, oy, ox = dz[ball], dy[ball], dx[ball]
+        zz = (path[sel, 0][:, None] + oz[None, :]).ravel()
+        yy = (path[sel, 1][:, None] + oy[None, :]).ravel()
+        xx = (path[sel, 2][:, None] + ox[None, :]).ravel()
+        ok = ((zz >= 0) & (zz < shape[0]) & (yy >= 0) & (yy < shape[1])
+              & (xx >= 0) & (xx < shape[2]))
+        path_mask[zz[ok], yy[ok], xx[ok]] = True
+
+
+def _truncate_at_skeleton(path, path_mask, attach_to=None):
+    """Cut a path where it first meets the existing skeleton, walking from the tip.
+
+    **This is what puts branch points on the centreline.** NeuTu's
+    ``extractPath`` walks from the endpoint toward the root and breaks at the first
+    ``m_pathMask`` voxel, so a new branch stops where it meets what is already
+    there rather than running back to the root
+    (``gui/zspgrowparser.cpp:51-62``).
+
+    Extracting every path to the root instead — which is what this port did, and
+    what the module docstring wrongly described as NeuTu's behaviour — makes branch
+    points fall wherever the *dijkstra tree* diverges. In a bulb that is nowhere
+    near the centre, which is the visible difference from NeuTu: NeuTu's branches
+    come off the main trunk near the middle of the bulb, ours came off wherever the
+    parent field happened to split.
+
+    ``path`` is root-first, so "walking from the tip" means taking the **last**
+    masked index and keeping the suffix from it.
+
+    **Truncation alone disconnects the skeleton**, which is why ``attach_to`` is
+    not optional. The mask is a *tube* of radius up to 3, so the cut voxel is
+    generally inside the tube without being a vertex of the existing skeleton —
+    nothing is shared, ``consolidate`` merges nothing, and the branch comes back as
+    a separate component. (``test_branches_are_traced`` caught exactly this: a Y
+    with no degree-3 vertex.) NeuTu gets connectivity from ``wholeTree->merge``;
+    here the nearest existing vertex is prepended, so the two paths share it and
+    the branch point lands on the centreline.
+    """
+    if not len(path):
+        return path
+    hits = path_mask[path[:, 0], path[:, 1], path[:, 2]]
+    if not hits.any():
+        return path
+    cut = path[int(np.flatnonzero(hits)[-1]):]
+    if attach_to is None or not len(attach_to):
+        return cut
+    from scipy.spatial import cKDTree
+
+    _, j = cKDTree(np.asarray(attach_to, dtype=float)).query(
+        np.asarray(cut[0], dtype=float))
+    anchor = np.asarray(attach_to[int(j)], dtype=cut.dtype).reshape(1, 3)
+    if np.array_equal(anchor[0], cut[0]):
+        return cut
+    return np.concatenate([anchor, cut], axis=0)
 
 
 def _edge_weighted_parents(labels, weight, root):
