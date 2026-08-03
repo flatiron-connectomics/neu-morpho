@@ -492,50 +492,92 @@ compelling and do not survive checking:
 
 ## Integration — the remaining work
 
+### Memory: measured, and it rules out whole-body at fine scales
+
+Peak RSS is roughly **12× the mask** (EDT, PDRF, parent field, DAF and label copies
+all live at once). Measured on body 6308993, the largest in the benchmark:
+
+| | crop | mask (bool) | EDT alone | peak |
+|---|---:|---:|---:|---:|
+| scale 2 | 459 M vox | 0.46 GB | 1.8 GB | **5.5 GB** (39 s) |
+| scale 1 | 1.84 G vox | 1.8 GB | 7 GB | ~22 GB |
+| scale 0 | 29.4 G vox | **29.4 GB** | **118 GB** | infeasible |
+
+**Whole-body tracing is impossible at scale 0** — one body exceeds a 251 GB node —
+and marginal at scale 1. At scale 2 it works per body, but **5.5 GB × 48 workers is
+264 GB and already OOMs**, so it cannot be dropped into the existing fan-out
+unchanged.
+
+Across a 1,500-body sample the demand has no heavy tail (p50 ~1.2 GB, p95 ~3.4 GB,
+max ~7.0 GB, using the block-count bound, which over-estimated body 6308993 by
+2.6×). So a **concurrency cap sized by the largest body**, or routing big bodies to
+a few slots, is enough at scale 2. A per-body memory estimate is available for free:
+the stage-1 fragment block count already bounds the bbox.
+
+### The real blocker is border handling, not memory
+
+Block-first removes the memory problem outright — one 256³ block is a 16.7 MB mask
+and a 67 MB EDT regardless of body size. But **`neutu_trace` has no `fix_borders`
+equivalent**, and that is what makes the existing stage-2 fusion work: kimimaro
+routes a skeleton through the centre of each block-face contact area, so adjacent
+blocks' fragments meet at the seam and the seam join only needs to reach ~1 voxel
+(`SkeletonConfig.join_radius_nm`). Without it, fragments end wherever each block's
+trace ends, they do not align across faces, and the join — deliberately bounded to
+seam scale, because widening it invents cable — cannot weld them.
+
+Two changes make block-first viable, and both fit the existing structure:
+
+1. **Mandatory border targets.** The extraction loop already carries a `pending`
+   list seeded with the extremal point; seed it with the **centroid of each
+   face-contact region** as well, and exempt those from the `min_length` test. That
+   is exactly kimimaro's `manual_targets_before` mechanism, so fragments will meet
+   at seams by construction.
+2. **Move branch rejection to stage 2.** `min_length` is measured on
+   un-invalidated geodesic length *within one component*. In a block, a branch that
+   is long overall looks short, so per-block rejection would delete precisely the
+   long-range cable that matters. Trace per block with a permissive threshold and
+   apply length-based pruning **after fusion**, where whole-body geometry exists.
+   The pipeline already splits responsibility this way for ticks
+   (`postprocess_tick_nm` runs at stage 2).
+
+### Two decisions to carry into the tracer swap
+
+**Expose `cost="edge"` in `SkeletonConfig`** (requested 2026-08-03). Not added yet
+because `SkeletonConfig` configures the kimimaro block-first stages and
+`neutu_trace` is not wired into them, so the field would be a knob nothing reads.
+It earns its place: over 12 bodies it takes cable ratio to 1.00× and centreline
+distance from 0.83 to 0.66 voxels, and runtime is a wash. **But it roughly doubles
+peak memory** (6.4 GB vs 5.5 GB on the largest body, scaling with edge count), so
+pair it with a component-size cap that falls back to `"voxel"` — which costs
+nothing, since `"edge"` gives no benefit on the largest bodies anyway. Under
+block-first the components are small and the cap may never fire; unmeasured.
+
 **Gap-bridging (`reconnect`, `maximalDistance=50`) is a product decision, not a
 fix.** NeuTu joins disconnected roots within 50 voxels (1,600 nm at 32 nm), which
-is what bridges visible mask gaps. It is *not* needed to match NeuTu's structure —
-see above — so adopt it only if bridging real segmentation splits is wanted for its
-own sake. Note it directly contradicts this project's existing rule against wide
-joins (CLAUDE.md: a 400 nm split doubled cable_length), so it needs a deliberate
-decision about inventing cable.
+is what bridges visible mask gaps. It is **not** needed to match NeuTu's structure
+— measured: both have one dominant bulb component holding 63–88% of bulb cable — so
+adopt it only if bridging real segmentation splits is wanted for its own sake. It
+contradicts this project's existing rule against wide joins (CLAUDE.md: a 400 nm
+split doubled cable_length), so it needs a deliberate call about inventing cable.
 
-**Wanted for the production run: `cost="edge"` exposed in `SkeletonConfig`**
-(requested 2026-08-03, conditional on the 12-body numbers holding up and the
-rendered figure looking right). Deliberately *not* added yet: `SkeletonConfig`
-configures the kimimaro block-first stages, and `neutu_trace` is not wired into
-them, so the field would be a knob nothing reads. Add it with the tracer swap.
+### Later, not now
 
-**Check memory before setting it.** `cost="edge"` builds an explicit 26-connected
-graph, so peak RSS scales with edge count: 1.9 → 2.9 GB on body 45892915
-(568 K voxels), extrapolating to ~4–5 GB on a 10⁶-voxel component. At 48 dask
-workers that is ~240 GB, so it needs either a voxel-count cap that falls back to
-`"voxel"`, or fewer workers. This may be moot under block-first, where per-body
-components inside a 256³ block are far smaller than whole-body ones — but it has
-not been measured there.
+**How do skeletons look at a coarser scale?** At scale 3 (64 nm) a whole-body trace
+costs 1/8 the memory of scale 2, which would make the per-body route comfortable
+and might be adequate for visualization. Untested, and worth an hour before
+committing to block-first complexity.
 
-Not yet done, and not a drop-in. Production skeletonization is **block-first**:
-stage 1 skeletonizes each 256³ block with kimimaro's `fix_borders=True` so
-fragments meet at seams, stage 2 fuses each body's fragments
-(`join_close_components` + `postprocess`). `neutu_trace.skeletonize` is
-**whole-body** — it computes an EDT and a parent field over one connected
-component at a time, which is exactly the per-body cropping the block-first
-design exists to avoid (see `SkeletonConfig`: the OOM risk is bounding-box
-*extent*, not voxel count).
-
-Two routes, in increasing order of work:
-
-1. **`swc_simplify` alone, in stage 2.** The reduction passes are
-   tool-independent — they take any `(vertices, radii, edges)`. Applying them to
-   the *current* kimimaro fusion output would capture a large part of the node
-   win with no change to tracing and no memory risk. Cheapest useful step.
-2. **Replace the tracer.** Needs a block-first story for `min_length`, and that
-   is the hard part: un-invalidated length is measured against the *whole*
-   component, so a branch crossing a block boundary looks short in each block
-   independently. Rejecting per block would delete exactly the long-range cable
-   the pipeline cares most about. Either trace per body where extent allows, or
-   defer branch rejection to stage 2 on the fused skeleton — where it is
-   post-hoc, and therefore the weaker geometric form.
+**Mask denoising is available and was never used.** NeuTu has four
+pre-skeletonization cleanups — `m_removingBorder` (an 8-neighbour 2D majority
+filter on the inverted mask, i.e. "remove 1-pixel gaps"), `m_interpolating`,
+`m_fillingHole`, and `m_minObjSize` (a dust filter) — and **all four were off in the
+runs that produced our reference SWCs** (three default false with no config key at
+all; `fillingHole` passed explicitly false). So they explain nothing about NeuTu's
+appearance. They are still the most direct lever on the noisy bulbs, since the
+noise is in the input: `SkeletonConfig.mask_opening_iters` already exists, off, and
+a majority-vote gap fill would be gentler than opening at a coarse scale, which its
+own comment warns can sever thin processes. Changing the mask invalidates the NeuTu
+reference comparisons, so it needs its own baseline.
 
 ## Watch out for
 
