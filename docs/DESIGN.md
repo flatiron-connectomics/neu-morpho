@@ -66,14 +66,16 @@ prevents it, verified by `tests/test_alignment.py`:
 
 ## Skeletons — block-first, two-stage (`ops/skeletonize_segments.py`)
 
-**kimimaro** is the chosen skeletonizer — validated as the clear winner on *real*
-Megaphragma neurons (cleaner than skeletor `by_wavefront`/`by_teasar`, which
-convolve bulbs and/or drop branches). skeletor stays available only via the
-comparison harness (`skelcompare.py` + `scripts/compare_skeletons.py`: same body
-→ mask + mesh → methods → metrics + interactive 3D HTML). Optional small mask
-open/close (`SkeletonConfig.mask_opening_iters`/`mask_closing_iters`, default 0)
-can tame convolution from imperfect segmentation — keep tiny (a voxel at a coarse
-skeleton scale is large and can sever thin processes / merge dense arbors).
+**`em_seg_morpho.neutu_trace` is the default skeletonizer** (`SkeletonConfig.tracer
+= "neutu"`), a reimplementation of NeuTu's TEASAR that it matches to sub-voxel
+centreline agreement; see `docs/skeletonization-plan.md`. **kimimaro** — the
+previous default, and still what `neutu_trace` builds its primitives on — remains
+selectable as `tracer="kimimaro"` and is **required for anisotropic pyramids**,
+which the neutu tracer rejects outright. Both were validated as clear winners on
+*real* Megaphragma neurons over skeletor `by_wavefront`/`by_teasar`, which convolve
+bulbs and/or drop branches; skeletor stays available only via the comparison
+harness (`skelcompare.py` + `scripts/compare_skeletons.py`: same body → mask + mesh
+→ methods → metrics + interactive 3D HTML).
 
 Skeletonization mirrors meshing rather than cropping per body:
 

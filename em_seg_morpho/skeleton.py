@@ -33,18 +33,6 @@ def _teasar_params(cfg: SkeletonConfig) -> dict:
             "pdrf_scale": cfg.pdrf_scale, "pdrf_exponent": cfg.pdrf_exponent}
 
 
-def _clean_mask(mask_zyx: np.ndarray, cfg: SkeletonConfig) -> np.ndarray:
-    """Optional small morphological cleanup before kimimaro (see SkeletonConfig)."""
-    import scipy.ndimage as ndi
-
-    b = mask_zyx.astype(bool)
-    if cfg.mask_opening_iters:
-        b = ndi.binary_opening(b, iterations=cfg.mask_opening_iters)
-    if cfg.mask_closing_iters:
-        b = ndi.binary_closing(b, iterations=cfg.mask_closing_iters)
-    return b
-
-
 # --------------------------------------------------------------------------- #
 # Stage 1: one block
 # --------------------------------------------------------------------------- #
@@ -68,14 +56,6 @@ def skeletonize_block(seg_block_zyx: np.ndarray, block_origin_vox_zyx: Sequence[
         return {}
 
     labels = seg_block_zyx
-    if cfg.mask_opening_iters or cfg.mask_closing_iters:
-        # Per-label cleanup: morphology is a binary op, so there is no way around
-        # one pass per body. Closing can make labels overlap; last one wins.
-        cleaned = np.zeros_like(labels)
-        for lab in present:
-            cleaned[_clean_mask(labels == lab, cfg)] = lab
-        labels = cleaned
-
     origin_nm = crop_origin_nm(block_origin_vox_zyx, cfg.anisotropy)   # anisotropy = skel voxel size
 
     if cfg.tracer == "neutu":
@@ -399,8 +379,6 @@ def skeletonize_body(mask_zyx: np.ndarray, body_id: int, crop_origin_vox_zyx, cf
     """
     import kimimaro
 
-    if cfg.mask_opening_iters or cfg.mask_closing_iters:
-        mask_zyx = _clean_mask(mask_zyx, cfg)
     labels = mask_zyx.astype(np.uint64) * np.uint64(body_id)
     skels = kimimaro.skeletonize(
         labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,

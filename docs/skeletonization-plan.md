@@ -273,8 +273,8 @@ approaches, swept to comparable node counts on real bodies:
 
 The test is on *new territory reached*, not geometric length: a short branch into
 unclaimed volume survives, a long one shadowing already-covered ground does not.
-Length alone cannot express that, which is why `swc_simplify.prune_twigs` exists
-but is off by default.
+Length alone cannot express that — which is why the post-hoc geometric pruner in
+the left-hand column lost, and was later deleted (see [Removed](#removed)).
 
 ### It is not a tuning knob
 
@@ -711,10 +711,39 @@ filter on the inverted mask, i.e. "remove 1-pixel gaps"), `m_interpolating`,
 runs that produced our reference SWCs** (three default false with no config key at
 all; `fillingHole` passed explicitly false). So they explain nothing about NeuTu's
 appearance. They are still the most direct lever on the noisy bulbs, since the
-noise is in the input: `SkeletonConfig.mask_opening_iters` already exists, off, and
-a majority-vote gap fill would be gentler than opening at a coarse scale, which its
-own comment warns can sever thin processes. Changing the mask invalidates the NeuTu
-reference comparisons, so it needs its own baseline.
+noise is in the input. There used to be a `SkeletonConfig.mask_opening_iters` /
+`mask_closing_iters` pair for this, defaulted off and never once set — it was
+deleted (see [Removed](#removed)); restore it if this is picked up, or better,
+implement the majority-vote gap fill, which is gentler than opening at a coarse
+scale (a voxel is large there and can sever thin processes). Changing the mask
+invalidates the NeuTu reference comparisons, so it needs its own baseline.
+
+## Removed
+
+Residue from the dead ends above, deleted 2026-08-03 once `neutu` became the
+default. **Everything here is restorable from commit `b531515`** (`git show
+b531515:<path>`, or `git checkout b531515 -- <path>` for the whole-file deletions).
+Nothing removed was on the production path, and none of it had a test — which is
+itself why it is listed: each was reachable-but-never-reached, the state that reads
+as a supported option and is not one.
+
+| Removed | Was | Why it went |
+|---|---|---|
+| `scripts/build_comparison_report.py` + `docs/skeletonization-comparison.html` | 295-line HTML report generator and its output | Numbers hardcoded from the 2-body round, tabulated **fill %** and **spill %**, and `BEST` highlighted *highest fill* as the winner — the objective this doc retracts. A polished artefact asserting a conclusion we disproved is worse than none. Figures kept in `docs/images/`, now linked from the comparison doc. |
+| `swc_simplify.prune_twigs` + `simplify(prune_below=)` | 76-line post-hoc geometric twig pruner | Lost to in-extraction `minimalLength` on the measurements above. `prune_below` defaulted to 0.0 and **no caller ever passed it**. |
+| `skelmetrics.spill_by_neighbour_size` | 38-line graded-spill diagnostic | Could not settle the question it was built for (see the comparison doc); spill was dropped as an objective in favour of `agreement`. |
+| `_neighbour_size_class` + `SIZE_BINS` in `scripts/export_benchmark_masks.py`, and the `body_*_nbrsize.npy` it wrote | per-voxel neighbour-size map | Its only consumer was `spill_by_neighbour_size`. It cost a full extra uint8 array per body, written to disk and read by nobody. Existing `.npy` files on ceph are untouched. |
+| `SkeletonConfig.mask_opening_iters` / `mask_closing_iters`, `skeleton._clean_mask` | optional pre-tracing morphology | Never set to anything but 0. Cost a branch in the per-block hot path, and NeuTu's own four mask cleanups were all **off** in the runs that made our reference SWCs, so no baseline supports tuning it. |
+| `neutu_io.read_sobj` | 13-line `.sobj` reader | No caller anywhere. `write_sobj` **stays** — it is `run_neutu`'s input format, i.e. how the reference SWCs are generated. |
+
+**Four things a dead-code scan flagged that are NOT dead**, recorded so the next
+sweep doesn't delete them: `neutu_io.write_sobj` (called by `run_neutu`, same file),
+`skelcompare.y_branch` / `rod_with_cavity` (dispatched through the `SHAPES` registry
+by `sweep_postprocess.py` and `compare_skeletons.py`), `skelmetrics.score` (used by
+`run_skel_benchmark.py` and `compare_skeletons_visual.py`), and `neutu_trace.path_to`
+— which is a **nested closure inside `_trace_component`**, i.e. core production
+tracing. Name-based scanning cannot see same-file callers, registry dispatch, or
+closures; verify each hit by grep before cutting.
 
 ## Watch out for
 

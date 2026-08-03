@@ -8,10 +8,12 @@ Specimen 3, scale 2 (32 nm/voxel). Two measurement rounds:
   [Corrections](#corrections--things-established-as-wrong) before relying on
   anything here.
 
-**Visual version: [`skeletonization-comparison.html`](skeletonization-comparison.html)**
-— the 2-body findings with the rendered figures inline; open it in a browser.
-Regenerate with `scripts/build_comparison_report.py` (add `--embed` for a single
-self-contained file to share).
+Figures from the 2-body round: [`images/fig_18052382.png`](images/fig_18052382.png),
+[`images/fig_6308993.png`](images/fig_6308993.png),
+[`images/fig_6308993_thickness.png`](images/fig_6308993_thickness.png). An HTML
+report used to wrap these; it ranked methods by **fill %**, which the Corrections
+below establish as not a score, so it was deleted rather than left to mislead — see
+`docs/skeletonization-plan.md` "Removed".
 
 Reusable code: `em_seg_morpho/neutu_io.py`, `em_seg_morpho/skelmetrics.py`,
 `em_seg_morpho/neutu_trace.py`, and under `scripts/`,
@@ -132,10 +134,13 @@ and *less* fill.
 **Spill is not an error signal here either.** The segmentation is dense — every
 voxel belongs to some segment, and 0.0% of spill lands on background — and many
 segments are one neuron incorrectly split, so a tube crossing into a neighbour is
-often reclaiming its own neurite. `skelmetrics.spill_by_neighbour_size` grades
-spill by neighbour size to test that, and it cannot settle it: moving the
-fragment/large boundary one bin swings "spill into large neighbours" from 13% to
-1%, because nearly every neighbour involved sits in that band.
+often reclaiming its own neurite. A `spill_by_neighbour_size` metric was built to
+test that — grading spill by how large the neighbour entered is, on the assumption
+that most false splits are small fragments — and **it could not settle it**: moving
+the fragment/large boundary one bin swings "spill into large neighbours" from 13%
+to 1%, because nearly every neighbour involved sits in that band. It and the
+`nbrsize` arrays that fed it were deleted; see `docs/skeletonization-plan.md`
+"Removed".
 
 **Optimise against `skelmetrics.agreement` instead** — bidirectional centreline
 distance to a reference skeleton, plus node/tip/cable ratios. There is not enough

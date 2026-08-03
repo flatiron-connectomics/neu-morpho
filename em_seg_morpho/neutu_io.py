@@ -28,7 +28,6 @@ import json
 import os
 import subprocess
 import tempfile
-from typing import Sequence
 
 import numpy as np
 
@@ -75,21 +74,6 @@ def write_sobj(mask_zyx: np.ndarray, path: str) -> int:
 
     buf.tofile(path)
     return nstripes
-
-
-def read_sobj(path: str, shape_zyx: Sequence[int]) -> np.ndarray:
-    """Read a ``.sobj`` back into a dense boolean mask. Mainly for round-trip tests."""
-    b = np.fromfile(path, dtype="<i4")
-    m = np.zeros(tuple(shape_zyx), dtype=bool)
-    i = 1
-    for _ in range(int(b[0])):
-        z, y, nseg = int(b[i]), int(b[i + 1]), int(b[i + 2])
-        i += 3
-        seg = b[i:i + 2 * nseg]
-        i += 2 * nseg
-        for k in range(nseg):
-            m[z, y, seg[2 * k]:seg[2 * k + 1] + 1] = True
-    return m
 
 
 # --------------------------------------------------------------------------- #

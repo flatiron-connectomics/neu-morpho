@@ -172,46 +172,6 @@ def agreement(zyx_a, radii_a, edges_a, zyx_b, radii_b, edges_b,
     }
 
 
-def spill_by_neighbour_size(mask_zyx, nbr_size_class, zyx, radii, edges=None,
-                            small_bin_max: int = 3, step: float = 0.5) -> dict:
-    """Where the tube spills to, graded by how large the neighbour it enters is.
-
-    **Diagnostic, not an objective.** There is no ground truth here, so nothing
-    in this function establishes that a given spill is wrong; optimise against
-    :func:`agreement` instead. It exists because plain "spill" is uninformative
-    on a dense segmentation: every voxel belongs to some segment, so a tube that
-    leaves the body necessarily enters a neighbour, and 0.0% of spill lands on
-    background.
-
-    The graded version carries some signal, on one assumption worth stating
-    because it is not verified: **most false splits are small fragments**. Under
-    it, spill into a small fragment is likely reclaiming the same neuron, while
-    spill into a large, morphologically complete neighbour is more likely a real
-    error. Neither is certain — a small fragment can be a genuinely separate
-    structure, and a large neighbour can be the same neuron badly split.
-
-    ``nbr_size_class`` is the uint8 map from ``export_benchmark_masks.py``: 0 for
-    this body or background, higher bins for larger neighbours.
-    ``small_bin_max`` is the highest bin still counted as a fragment; sweep it,
-    since the boundary is a judgement call rather than a measurement.
-    """
-    mask = np.asarray(mask_zyx).astype(bool)
-    cls = np.asarray(nbr_size_class)
-    tube = rasterize(mask.shape, zyx, radii, edges, step)
-    inter = int((tube & mask).sum())
-    n_tube = max(1, int(tube.sum()))
-    out = tube & ~mask
-    small = int((out & (cls > 0) & (cls <= small_bin_max)).sum())
-    large = int((out & (cls > small_bin_max)).sum())
-    return {
-        "coverage": inter / max(1, int(mask.sum())),
-        "spill_into_fragments": small / n_tube,
-        "spill_into_large_neighbours": large / n_tube,
-        "spill_into_background": (n_tube - inter - small - large) / n_tube,
-        "nodes": int(len(radii)),
-    }
-
-
 def radius_vs_edt(mask_zyx: np.ndarray, zyx, radii) -> dict:
     """Diagnostic: reported radius against the mask's own distance transform.
 

@@ -316,96 +316,13 @@ def _postorder(roots, children):
     return order
 
 
-# --------------------------------------------------------------------------- #
-# branch pruning — the actual node-count lever
-# --------------------------------------------------------------------------- #
-def prune_twigs(vertices, radii, edges, min_length, *, max_rounds=100):
-    """Iteratively drop leaf branches shorter than ``min_length``.
+def simplify(vertices, radii, edges, *, preserve_junctions=PRESERVE_JUNCTIONS, **kw):
+    """The full reduction: region-sample, then downsample.
 
-    **This, not node spacing, is what separates our node count from NeuTu's.**
-    Measured on the 12-body benchmark: after steps 2–3 the port places *fewer*
-    nodes per unit cable than NeuTu (10.3 vs 16.6 per 100 voxels on body
-    6308993) but traces 10.5× more cable, with 5,022 tips against NeuTu's 116.
-    NeuTu suppresses those during extraction via ``minimalLength``; without an
-    equivalent, every spur that segmentation roughness produces becomes cable.
-
-    **Iteration is required.** One pass removes only ~14% of cable, because
-    dropping a twig turns its parent into a new twig. Run to a fixpoint.
-
-    This is a *geometric* approximation of NeuTu's test, which uses
-    **un-invalidated geodesic length** — the new territory a branch covers, not
-    its length — and so also rejects long branches that merely shadow ground
-    already claimed. Expect this to prune less than NeuTu at equal threshold.
-
-    Pruning trades fill for nodes: the branches removed do cover part of the
-    object. Sweep ``min_length`` against ``skelmetrics.score`` rather than
-    picking a value.
+    Branch *count* is not this module's problem — it is settled during tracing, by
+    ``neutu_trace``'s un-invalidated-length test. A geometric post-hoc pruner used
+    to live here and was removed; see docs/skeletonization-plan.md "Removed".
     """
-    v = np.asarray(vertices, dtype=float)
-    r = np.asarray(radii, dtype=float)
-    e = np.asarray(edges, dtype=int).reshape(-1, 2)
-    if len(v) == 0 or len(e) == 0 or min_length <= 0:
-        return v, r, e
-
-    alive = np.ones(len(v), dtype=bool)
-    live_e = np.ones(len(e), dtype=bool)
-    adj: list[list[tuple[int, int]]] = [[] for _ in range(len(v))]
-    for k, (a, b) in enumerate(e):
-        adj[a].append((b, k))
-        adj[b].append((a, k))
-
-    for _ in range(max_rounds):
-        deg = np.zeros(len(v), dtype=int)
-        for k, (a, b) in enumerate(e):
-            if live_e[k]:
-                deg[a] += 1
-                deg[b] += 1
-        removed = 0
-        for leaf in np.flatnonzero((deg == 1) & alive):
-            # walk inward through degree-2 nodes to the first junction
-            chain, chain_e = [int(leaf)], []
-            cur, prev, acc = int(leaf), -1, 0.0
-            while True:
-                nxt = [(w, k) for w, k in adj[cur]
-                       if live_e[k] and alive[w] and w != prev]
-                if len(nxt) != 1:
-                    break
-                w, k = nxt[0]
-                acc += float(np.linalg.norm(v[cur] - v[w]))
-                chain_e.append(k)
-                prev, cur = cur, w
-                if deg[cur] != 2:
-                    break
-                chain.append(cur)
-            # only prune a twig hanging off a junction; a whole free-floating
-            # component is not a spur and is left to dust removal
-            if acc >= min_length or deg[cur] < 3:
-                continue
-            for node in chain:
-                alive[node] = False
-            for k in chain_e:
-                live_e[k] = False
-            removed += 1
-        if removed == 0:
-            break
-
-    idx = np.flatnonzero(alive)
-    remap = np.full(len(v), -1, dtype=int)
-    remap[idx] = np.arange(len(idx))
-    kept_e = e[live_e]
-    kept_e = kept_e[alive[kept_e[:, 0]] & alive[kept_e[:, 1]]]
-    return v[idx], r[idx], remap[kept_e] if len(kept_e) else np.zeros((0, 2), dtype=int)
-
-
-def simplify(vertices, radii, edges, *, prune_below=0.0,
-             preserve_junctions=PRESERVE_JUNCTIONS, **kw):
-    """The full reduction: prune, region-sample, then downsample.
-
-    Pruning runs **first**, on the dense skeleton, where twig lengths are
-    measured most accurately.
-    """
-    v, r, e = vertices, radii, edges
-    if prune_below > 0:
-        v, r, e = prune_twigs(v, r, e, prune_below)
-    v, r, e = region_sample(v, r, e, preserve_junctions=preserve_junctions)
+    v, r, e = region_sample(vertices, radii, edges,
+                            preserve_junctions=preserve_junctions)
     return optimal_downsample(v, r, e, **kw)

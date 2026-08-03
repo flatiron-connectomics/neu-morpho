@@ -137,15 +137,6 @@ class SkeletonConfig:
 
     fragment_format: str = "skel"             # per-fragment on-disk extension
 
-    # Optional mask cleanup before kimimaro, to tame convolution from imperfect
-    # segmentation. KEEP SMALL (1 iter = 1 voxel): opening removes tiny boundary
-    # protrusions (spurious-branch sources) but at a COARSE skeleton_scale a
-    # voxel is large and can sever thin processes / merge dense arbors — so both
-    # default OFF; enable cautiously per data. In block mode this costs one
-    # morphology pass **per label per block**, so it is far from free.
-    mask_opening_iters: int = 0
-    mask_closing_iters: int = 0
-
 
 @dataclass
 class OutputConfig:
