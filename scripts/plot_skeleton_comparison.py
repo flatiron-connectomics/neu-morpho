@@ -95,6 +95,10 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--tol-vox", type=float, default=6.0,
                     help="centreline distance above which cable counts as absent")
+    ap.add_argument("--selectors", action="store_true",
+                    help="compare the two target selectors instead of showing "
+                         "kimimaro: NeuTu, select=daf, select=uninvalidated. Traces "
+                         "live rather than reading cached npz.")
     a = ap.parse_args()
 
     import matplotlib
@@ -118,13 +122,30 @@ def main() -> int:
         zn, rn, par, nid = neutu_io.read_swc(
             f"{a.benchmark}/neutu_swc/b{body}_neutu_L10.swc")
         en = neutu_io.swc_edges(par, nid)
-        vp, rp, ep = _npz(f"{port_dir}/b{body}_simplify.npz")
-        vk, rk, ek = _npz(f"{a.benchmark}/kimimaro/b{body}_kimi_production.npz")
+        if a.selectors:
+            from em_seg_morpho import neutu_trace, swc_simplify
+
+            def _trace(sel):
+                s = neutu_trace.skeletonize(mask, select=sel)
+                return swc_simplify.simplify(np.asarray(s.vertices, float),
+                                             np.asarray(s.radii, float),
+                                             np.asarray(s.edges, int))
+            vp, rp, ep = _trace("daf")
+            vk, rk, ek = _trace("uninvalidated")
+            second = ("port, select=daf  (default)", C_PORT)
+            third = ("port, select=uninvalidated  (NeuTu's rule)", C_KIMI)
+        else:
+            vp, rp, ep = _npz(f"{port_dir}/b{body}_simplify.npz")
+            vk, rk, ek = _npz(f"{a.benchmark}/kimimaro/b{body}_kimi_production.npz")
+            second = ("port  (neutu_trace + swc_simplify)", C_PORT)
+            third = ("kimimaro production  (ships today)", C_KIMI)
+
         ag = skelmetrics.agreement(vp, rp, ep, zn, rn, en)
+        agk = skelmetrics.agreement(vk, rk, ek, zn, rn, en) if a.selectors else None
 
         panels = [("NeuTu  (reference)", zn, rn, en, C_NEUTU, None),
-                  ("port  (neutu_trace + swc_simplify)", vp, rp, ep, C_PORT, ag),
-                  ("kimimaro production  (ships today)", vk, rk, ek, C_KIMI, None)]
+                  (second[0], vp, rp, ep, second[1], ag),
+                  (third[0], vk, rk, ek, third[1], agk)]
         for col, (name, v, r, e, c, agr) in enumerate(panels):
             _draw(ax[row, col], mip, v, e, c, axis)
             ax[row, col].set_title(name, fontsize=10.5, color=INK, pad=8)
@@ -138,14 +159,15 @@ def main() -> int:
 
         # panel 4: disagreement, both directions
         pn, _ = skelmetrics.sweep(zn, rn, en)
-        pp, _ = skelmetrics.sweep(vp, rp, ep)
+        dv, dr, de = (vk, rk, ek) if a.selectors else (vp, rp, ep)
+        pp, _ = skelmetrics.sweep(dv, dr, de)
         miss = cKDTree(pp).query(pn)[0] > a.tol_vox          # NeuTu has it, we don't
         extra = cKDTree(pn).query(pp)[0] > a.tol_vox         # we have it, NeuTu doesn't
         axm = ax[row, 3]
         axm.imshow(mip.T, cmap="Greys", alpha=0.16, origin="lower",
                    interpolation="nearest", vmin=0, vmax=1.6)
-        if len(ep):
-            seg = np.stack([vp[ep[:, 0]][:, cols], vp[ep[:, 1]][:, cols]], axis=1)
+        if len(de):
+            seg = np.stack([dv[de[:, 0]][:, cols], dv[de[:, 1]][:, cols]], axis=1)
             axm.add_collection(LineCollection(seg, colors=MUTED, linewidths=0.5))
         axm.scatter(pp[extra][:, cols[0]], pp[extra][:, cols[1]], s=1.2,
                     c=C_EXTRA, linewidths=0, zorder=3)
@@ -153,11 +175,12 @@ def main() -> int:
                     c=C_MISS, linewidths=0, zorder=4)
         axm.set_xlim(0, mip.shape[0])
         axm.set_ylim(0, mip.shape[1])
-        axm.set_title(f"disagreement with NeuTu (> {a.tol_vox:.0f} vox)",
+        axm.set_title(f"{'uninvalidated' if a.selectors else 'port'} vs NeuTu "
+                      f"(> {a.tol_vox:.0f} vox)",
                       fontsize=10.5, color=INK, pad=8)
         axm.text(0.02, 0.03,
                  f"{100*miss.mean():.1f}% of NeuTu cable absent\n"
-                 f"{100*extra.mean():.1f}% of port cable added",
+                 f"{100*extra.mean():.1f}% of its cable added",
                  transform=axm.transAxes, va="bottom", fontsize=8.5, color=INK2,
                  family="monospace")
 
@@ -175,12 +198,16 @@ def main() -> int:
 
     fig.legend(handles=[mpatches.Patch(color=C_NEUTU, label="NeuTu"),
                         mpatches.Patch(color=C_PORT, label="port"),
-                        mpatches.Patch(color=C_KIMI, label="kimimaro production"),
+                        mpatches.Patch(color=C_KIMI,
+                                       label="select=uninvalidated" if False
+                                       else "kimimaro production / select=uninvalidated"),
                         mpatches.Patch(color=C_MISS, label="NeuTu cable the port lacks"),
                         mpatches.Patch(color=C_EXTRA, label="port cable NeuTu lacks")],
                loc="lower center", ncol=5, frameon=False, fontsize=10.5,
                bbox_to_anchor=(0.5, 0.004))
-    fig.suptitle("Skeletons at NeuTu's own settings — the two largest thick bodies",
+    fig.suptitle(("Target selection: max-DAF vs NeuTu's un-invalidated-length rule"
+                  if a.selectors else
+                  "Skeletons at NeuTu's own settings — the two largest thick bodies"),
                  fontsize=13.5, color=INK, y=0.997)
     fig.subplots_adjust(left=0.045, right=0.99, top=0.93, bottom=0.07,
                         wspace=0.05, hspace=0.10)

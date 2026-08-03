@@ -324,10 +324,60 @@ reintroduced bug if it ever needs raising.
 The `patience` finding above still stands — it was measured before these fixes but
 re-checked after, and a global stop on max-DAF selection still truncates arbor.
 
-**The rewrite is unjustified.** Its entire case was closing a 4× tip gap that does
-not exist. A greedy path-reselection implementation was written and then removed:
-with the bugs fixed it measured *worse* (tip 5.9× and 21.9×), because its first
-pass runs at `min_length=0` by design.
+### Target selection by un-invalidated length — implemented, and it is a trade
+
+`select="uninvalidated"` in `neutu_trace` is NeuTu's actual rule: score every
+boundary voxel by the geodesic length of its not-yet-invalidated tail, take the
+argmax, and stop once the best remaining falls under `minimalLength`. Two things
+made it affordable, both of which I had wrong at first:
+
+- **`dijkstra3d.parental_field` is decodable** — a 1-based Fortran flat index, 0 at
+  the root. `decode_parents` reads it and
+  `test_decode_parents_gives_adjacent_parents` pins the encoding, since it is
+  undocumented.
+- **Work in the component's index space, not the crop's.** The per-round
+  first-invalidated-ancestor search is pointer doubling over an absorbing map,
+  `log2(depth)` vectorised gathers. Run over the full crop it took 139 s on body
+  45813451; compacted to the component's 27,750 voxels it takes 5.6 s — on par
+  with max-DAF. **No Cython needed**; the earlier "this needs a C extension"
+  concern was about the wrong array.
+
+Measured over all 12 bodies, medians (port : NeuTu):
+
+| | `select="daf"` (default) | `select="uninvalidated"` |
+|---|---:|---:|
+| tips | **1.01×** | 1.22× |
+| cable | **1.07×** | 1.13× |
+| A→B | **0.83** | 0.93 |
+| B→A p90 | 2.44 | **2.41** |
+
+Near-identical on ten bodies. On the two bulb-heavy ones the trade is large and
+runs both ways:
+
+| body | daf | uninvalidated |
+|---|---|---|
+| 6308993 | 1.01× tips, p90 **7.51** | **2.78×** tips, p90 **4.18** |
+| 45892915 | 1.16× tips, p90 **7.52** | **2.61×** tips, p90 **4.50** |
+
+So NeuTu's rule recovers much more of NeuTu's branch structure inside the noisy
+bulbs while adding ~2.7× the tips. **Neither dominates**, and the metrics cannot
+settle it because the bulbs are segmentation noise where "correct" is undefined —
+so the default stays `daf` (closer on counts) and the alternative stays available.
+`figures/selector_comparison.png` renders the difference.
+
+Two hypotheses for the extra branches were tested and **refuted**: restricting
+candidates to boundary voxels (NeuTu's `m_fgArray`) changed nothing (1.93× →
+1.93×), and NeuTu's effective threshold is *lower* than ours (8, since
+`minLength -= maskExpansionRadius`), which would give it more branches, not fewer.
+What remains unexcluded is that NeuTu grows its paths with `Stack_Sp_Grow` rather
+than `parental_field` over our per-voxel cost — an equivalence verified only on
+synthetic tubes, not inside convoluted bulbs.
+
+**Also tried and removed: greedy path reselection.** Reframing the rule as a
+greedy set-cover over the paths from a `min_length=0` pass measured far worse
+(tip 5.9× and 21.9×) because only *accepted* paths invalidate there, whereas the
+sequential pass invalidates on rejected ones too — so territory stayed uncovered
+and far too many paths cleared the threshold.
 
 **The generalisable lesson**: a parameter that compensates for a mechanism you have
 not directly verified is usually masking a bug. The compensating constant survived
