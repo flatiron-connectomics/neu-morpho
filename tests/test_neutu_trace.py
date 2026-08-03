@@ -373,3 +373,98 @@ def test_path_mask_radius_is_capped():
     # a cap of 3 cannot reach 6 voxels away even though the EDT there is large
     assert not pm[15, 12, 12 + 6]
     assert pm[15, 12, 12]
+
+
+@pytest.mark.parametrize("bend,limit", [(False, 0.5), (True, 3.0)])
+def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
+    """The property block-first fusion depends on.
+
+    Stage 2 welds fragments with a join bounded to seam scale, because widening it
+    invents cable. That only works if both blocks routed a path to the same point on
+    the shared face. Cut a tube in two, skeletonize each half independently, and
+    compare where each fragment meets the cut.
+
+    **Adjacent blocks do not share a plane** — block A ends at z=k, block B starts at
+    z=k+1 — so on curved structure the two contact-area centres genuinely differ, and
+    the offset is bounded by how far the cross-section shifts in one voxel, not by
+    zero. Measured here: straight 5.10 -> 0.00 voxels, bent 4.12 -> 2.83. The bent
+    residual EXCEEDS the auto join radius (2 voxels), so `join_radius_nm` may need
+    raising for curved processes -- see docs/skeletonization-plan.md.
+    """
+    m = _tube(length=60, r=4, pad=4, bend=bend)
+    cut = m.shape[0] // 2
+    left = np.asfortranarray(m[:cut].copy())
+    right = np.asfortranarray(m[cut:].copy())
+
+    def endpoint(mask, face, fix):
+        skel = neutu_trace.skeletonize(mask, fix_borders=fix)
+        v = np.asarray(skel.vertices, float)
+        assert len(v)
+        j = int(np.argmin(np.abs(v[:, 0] - face)))
+        return v[j], abs(v[j, 0] - face)
+
+    lp, ld = endpoint(left, left.shape[0] - 1, True)
+    rp, rd = endpoint(right, 0, True)
+    assert ld <= 1.0 and rd <= 1.0, "a fragment did not reach the face"
+    off_fix = float(np.linalg.norm(lp[1:] - rp[1:]))
+
+    lp0, _ = endpoint(left, left.shape[0] - 1, False)
+    rp0, _ = endpoint(right, 0, False)
+    off_no = float(np.linalg.norm(lp0[1:] - rp0[1:]))
+
+    assert off_fix <= limit, f"seam offset {off_fix:.2f} exceeds {limit}"
+    assert off_fix < off_no - 0.5, (
+        f"fix_borders did not improve the seam: {off_no:.2f} -> {off_fix:.2f}")
+
+
+def test_border_targets_sit_on_the_faces_and_inside_the_body():
+    """Targets must be on a face of the array and inside the object."""
+    import cc3d
+
+    m = _tube(length=30, r=4, pad=0)          # pad=0 so the tube touches z faces
+    cc = cc3d.connected_components(np.asfortranarray(m), connectivity=26)
+    bt = neutu_trace.border_targets(cc)
+    assert bt, "no border targets found on a tube that touches the faces"
+    for label, pts in bt.items():
+        for p in pts:
+            z, y, x = (int(v) for v in p)
+            assert m[z, y, x], "border target is outside the object"
+            on_face = (z in (0, m.shape[0] - 1) or y in (0, m.shape[1] - 1)
+                       or x in (0, m.shape[2] - 1))
+            assert on_face, f"border target {(z, y, x)} is not on a face"
+
+
+def test_short_boundary_crossing_stub_survives_min_length():
+    """Why per-block min_length does NOT need moving to stage 2.
+
+    The worry was that a branch long overall looks short inside one block, so
+    per-block rejection would delete long-range cable. Border targets remove it:
+    anything crossing a face has a contact region there, so it gets a MANDATORY
+    target exempt from min_length and is traced regardless of its length in this
+    block. min_length then only prunes branches wholly interior to the block —
+    which is what it is for.
+
+    Geometry: a trunk running near the y-max face with a ~4-voxel spur poking
+    through it, comfortably under min_length=10. The spur has to be short *and*
+    attached, which is why the trunk sits close to the face — an earlier version put
+    the trunk far away, making the spur 12 voxels, and the vacuity guard below
+    caught it.
+    """
+    m = np.zeros((40, 30, 30), dtype=np.uint8)
+    zz, yy, xx = np.indices(m.shape)
+    m[(zz >= 5) & (zz < 35) & ((yy - 25) ** 2 + (xx - 15) ** 2 <= 9)] = 1   # trunk
+    m[(np.abs(zz - 20) <= 1) & (yy >= 25) & ((xx - 15) ** 2 <= 4)] = 1      # spur
+    m = np.asfortranarray(m)
+    assert m[:, -1, :].any(), "spur does not reach the y-max face"
+
+    def reaches_face(fix):
+        skel = neutu_trace.skeletonize(m, fix_borders=fix, min_length=10.0)
+        v = np.asarray(skel.vertices, float)
+        return bool(len(v)) and bool((v[:, 1] >= m.shape[1] - 2).any())
+
+    assert reaches_face(True), (
+        "a boundary-crossing spur was dropped even with fix_borders; per-block "
+        "min_length would then delete long-range cable")
+    assert not reaches_face(False), (
+        "test is vacuous — the spur survives without fix_borders, so it does not "
+        "demonstrate the exemption")

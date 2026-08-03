@@ -162,7 +162,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 const: float | None = None, min_length: float = MIN_LENGTH,
                 patience: int | None = PATIENCE, cost: str = COST,
                 attach_at_skeleton: bool = ATTACH_AT_SKELETON,
-                dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
+                fix_borders: bool = False, dust_threshold: int = 0,
+                connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
     Returns an ``osteoid.Skeleton`` whose ``vertices`` are zyx voxel coordinates
@@ -199,6 +200,10 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
         return Skeleton()
     boxes = cc3d.statistics(cc)["bounding_boxes"]
     counts = np.bincount(cc.reshape(-1), minlength=n_comp + 1)
+    # Border targets must be found on the ARRAY's faces, before per-component
+    # cropping moves them. In block mode the array is the block, so these are the
+    # block faces -- which is the point.
+    borders = border_targets(cc) if fix_borders else {}
 
     pieces = []
     for label in range(1, n_comp + 1):
@@ -212,10 +217,17 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
         hi = [min(labels.shape[k], box[k].stop + 1) for k in range(3)]
         sub = np.asfortranarray(
             (cc[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] == label).astype(np.uint8))
+        bt = borders.get(label, np.zeros((0, 3), dtype=np.int64))
+        if len(bt):
+            bt = bt - np.array(lo, dtype=np.int64)          # into crop coordinates
+            inb = np.all((bt >= 0) & (bt < np.array(sub.shape)), axis=1)
+            bt = bt[inb]
+            if len(bt):
+                bt = bt[sub[bt[:, 0], bt[:, 1], bt[:, 2]] != 0]
         skel = _trace_component(sub, scale=scale, const=const,
                                 min_length=min_length, patience=patience,
                                 cost=cost, attach_at_skeleton=attach_at_skeleton,
-                                max_paths=max_paths)
+                                border_targets=bt, max_paths=max_paths)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -229,8 +241,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
 
 def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
                      patience=PATIENCE, cost=COST,
-                     attach_at_skeleton=ATTACH_AT_SKELETON, max_paths=None,
-                     dbf=None):
+                     attach_at_skeleton=ATTACH_AT_SKELETON, border_targets=None,
+                     max_paths=None, dbf=None):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -291,10 +303,18 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
     remaining = int(np.count_nonzero(labels))
     if max_paths is None:
         max_paths = remaining
-    pending = [farthest]                    # the extremal point is always a target
+    # (target, mandatory). Border targets are mandatory: a fragment that skips one
+    # will not meet its neighbour across that face, and the seam join is too narrow
+    # to rescue it. The extremal point is a target but may be rejected normally.
+    pending = [(tuple(int(v) for v in t), True)
+               for t in (border_targets if border_targets is not None else [])]
+    pending.append((farthest, False))
     misses = 0
     while (remaining > 0 or pending) and len(paths) < max_paths:
-        target = pending.pop() if pending else target_finder.find_target(labels)
+        if pending:
+            target, mandatory = pending.pop()
+        else:
+            target, mandatory = target_finder.find_target(labels), False
         path = path_to(target)
         if not len(path):
             # No path to this target: retire the voxel anyway, or find_target keeps
@@ -306,7 +326,7 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
                 break
             continue
         keep = True
-        if min_length > 0:
+        if min_length > 0 and not mandatory:
             keep = _uninvalidated_length(path, labels) >= min_length
         if path_mask is not None:
             path = _truncate_at_skeleton(path, path_mask, accepted_verts)
@@ -384,6 +404,36 @@ def _uninvalidated_length(path, labels):
         return 0.0
     tail = path[len(path) - n_tail:].astype(np.float64)
     return float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
+
+
+def border_targets(cc_labels):
+    """Centre of each face-contact region, per connected component.
+
+    **This is what makes block-first fusion possible.** Stage 1 traces each block
+    independently, and stage 2 welds a body's fragments with a join bounded to seam
+    scale (``SkeletonConfig.join_radius_nm``, ~1 voxel by construction) — because
+    widening it invents cable. That only works if adjacent blocks' fragments already
+    *meet* at the shared face, which requires both blocks to route a path to the
+    same agreed point on it. The centre of the contact area is that point: it is a
+    property of the face geometry, so two blocks computing it independently get the
+    same answer.
+
+    Delegates to ``kimimaro.intake.compute_border_targets``, which for each of the
+    six faces runs 2D connected components, takes the 2D distance transform, and
+    picks the deepest point of each contact region. Reused rather than
+    reimplemented — it is the exact rule the existing stage-2 fusion was built
+    against, so any divergence here would break the seam join silently.
+
+    Axis order is safe to ignore: kimimaro names the axes ``sx, sy, sz`` but only
+    ever uses them to index the array it was given, so a zyx array yields zyx
+    coordinates. That holds only while anisotropy is isotropic, which
+    :func:`skeletonize` already requires.
+    """
+    from kimimaro.intake import compute_border_targets
+
+    out = compute_border_targets(cc_labels, (1.0, 1.0, 1.0))
+    return {int(k): np.asarray(list(v), dtype=np.int64).reshape(-1, 3)
+            for k, v in out.items()}
 
 
 def _stamp_path_mask(path_mask, path, DBF, cap=SKELETON_RADIUS):

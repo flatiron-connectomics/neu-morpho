@@ -527,18 +527,66 @@ seam scale, because widening it invents cable — cannot weld them.
 
 Two changes make block-first viable, and both fit the existing structure:
 
-1. **Mandatory border targets.** The extraction loop already carries a `pending`
-   list seeded with the extremal point; seed it with the **centroid of each
-   face-contact region** as well, and exempt those from the `min_length` test. That
-   is exactly kimimaro's `manual_targets_before` mechanism, so fragments will meet
-   at seams by construction.
-2. **Move branch rejection to stage 2.** `min_length` is measured on
-   un-invalidated geodesic length *within one component*. In a block, a branch that
-   is long overall looks short, so per-block rejection would delete precisely the
-   long-range cable that matters. Trace per block with a permissive threshold and
-   apply length-based pruning **after fusion**, where whole-body geometry exists.
-   The pipeline already splits responsibility this way for ticks
-   (`postprocess_tick_nm` runs at stage 2).
+1. **Mandatory border targets — implemented** as
+   `neutu_trace.skeletonize(fix_borders=True)`. `border_targets` delegates to
+   `kimimaro.intake.compute_border_targets` (per face: 2D connected components, 2D
+   distance transform, deepest point of each contact region) rather than
+   reimplementing it — that is the rule stage-2 fusion was built against, so a
+   divergence would break the seam join silently. Targets are seeded into the
+   extraction loop's existing `pending` list and **exempted from `min_length`**,
+   since a fragment that skips one cannot meet its neighbour and the join is too
+   narrow to rescue it.
+
+   **A limit to know before trusting it.** Adjacent blocks do not share a plane —
+   block A ends at z=k, block B starts at z=k+1 — so on curved structure the two
+   contact-area centres genuinely differ. Measured on a split tube, seam offset
+   without → with:
+
+   | | without | with |
+   |---|---:|---:|
+   | straight | 5.10 vox | **0.00** |
+   | bent | 4.12 vox | **2.83** |
+
+   The bent residual **exceeds the auto `join_radius_nm`** (2 voxels = 64 nm at
+   scale 2), so curved processes may fail to weld at the default. Either raise it
+   toward the observed seam offset — a bounded, seam-scale increase, not the wide
+   join CLAUDE.md warns against — or measure the real seam-offset distribution on
+   production blocks first. Do not assume zero offset because a straight tube gives
+   zero; `test_fix_borders_makes_adjacent_blocks_meet_at_the_face` pins both cases
+   for that reason.
+2. ~~**Move branch rejection to stage 2.**~~ **Not needed.** The worry was that a
+   branch long overall looks short inside one block, so per-block `min_length` would
+   delete long-range cable. Border targets remove it: anything crossing a face has a
+   contact region there, so it gets a **mandatory** target exempt from `min_length`
+   and is traced regardless of its length in this block. `min_length` then only
+   prunes branches wholly interior to the block, which is its job.
+   `test_short_boundary_crossing_stub_survives_min_length` pins it — a 4-voxel spur
+   through a face is dropped without `fix_borders` and survives with it.
+
+### Overlapping blocks (halo) — BUILT, MEASURED, REMOVED
+
+Proposed to make seam joins easier to place, and argued for on two grounds. **Both
+failed on measurement**, so the machinery (`seam_targets`, `canonical_seam_planes`,
+`trim_to_core`) was removed; it is in git history if ever wanted.
+
+**Seam agreement did not need it.** The case rested on a 2.83-voxel seam offset on a
+bent synthetic tube, worse than the 2-voxel default join. On real bodies, seam gaps
+without any halo are **1.00–1.41 voxels — already inside the default join** — and a
+16-voxel halo made them slightly *worse* (1.73). The synthetic tube bent one voxel
+laterally per two z steps, far sharper than real neurites at 32 nm.
+
+**Radius accuracy did not need it either, and the mechanism was wrong.** The claim
+was that a block cuts through neurites so the EDT at the face sees a truncated
+object and radii are under-estimated. But `skeletonize` computes its EDT with
+`black_border=False`, so **the array edge is never treated as background** — there is
+no truncation. An apparent −2.00 voxel error was an artefact of comparing a block
+vertex's radius against the *nearest whole-body vertex's* radius, i.e. measuring
+position differences between two skeletons. Compared against the true whole-mask EDT
+**at the same voxel**, block radii are correct to **mean +0.03, worst +0.59 voxels**
+with no halo.
+
+So the default `join_radius_nm` of 2 voxels is adequate as measured, and the halo's
+1.42× read-and-compute cost buys nothing.
 
 ### Two decisions to carry into the tracer swap
 
