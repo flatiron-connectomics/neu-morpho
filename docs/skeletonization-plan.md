@@ -588,6 +588,42 @@ with no halo.
 So the default `join_radius_nm` of 2 voxels is adequate as measured, and the halo's
 1.42× read-and-compute cost buys nothing.
 
+### It runs at production scale — measured, twice
+
+Both runs used `--tracer neutu --skel-scale 2 --block 256,256,256` with the 20k-body
+allowlist. **`--tracer` and `--neutu-cost` are recorded in `run_plan.json`**, which is
+the only way to tell later what produced a given output directory.
+
+| | local, 4 workers | SLURM, 48 workers |
+|---|---|---|
+| ROI (scale-2 voxels) | `406,675,1133,563,931,1389` | `406,675,1133,819,1742,1407` |
+| skel blocks | 8 | **30**, 0 failed |
+| bodies fused | 2,317 | **6,079** (6,061 written, 18 dust) |
+| cable in → out | — | 476.3 M → 462.4 M nm |
+| `dropped_cable_fraction` | 0.0343 (kimimaro: 0.0909) | **0.0332** |
+| `inferred_cable_fraction` | — | 0.0041 |
+| seam joins | 4,922 comps, +0.25% cable | 39,167 comps, +1.63 M nm (+0.34%) |
+| ticks removed | — | 94,397 branches, 15.05 M nm (3.2%) |
+| skel wall time | 12.3 min (kimimaro: 7.1) | 5.3 min |
+
+Two things the numbers settle. **`fix_borders` holds at scale** — 39k seam joins added
+0.34% cable, i.e. the fragments really do meet within `join_radius_nm`, so nothing had
+to be invented to weld them; `inferred_cable_fraction` 0.004 is the total cable the
+joins conjured. And **neutu drops less cable than kimimaro at the same ROI** (0.034 vs
+0.091), which is the metric that matters here: dropped cable is arbor thrown away by
+dust/tick postprocessing, and kimimaro's extra nodes were mostly ticks.
+
+`bodies_multi_component` is 4,257 of 6,079. That is **correct reporting**, not a
+defect — this dataset's bodies are genuinely fragmented (CLAUDE.md, verified against
+the raw array), and a finer scale finds *more* components, not fewer.
+
+**Run only `--stages skel` when comparing tracers.** `--stages seg,skel` also copies
+the label pyramid, which at scale 0 is 32.2 Gvox / 258 GB raw for this ROI. It is fast
+(2.1 min) because most blocks are all-zero and tensorstore elides them, but it reads
+every one from ceph and has nothing to do with skeletonization — the log line
+`seg scale 0 ( 8 nm)` is the copy, while skeletonization is whatever `skel scale N`
+says.
+
 ### Two decisions to carry into the tracer swap
 
 **`cost="edge"` is now wired in as `SkeletonConfig.neutu_cost`** — done, and
