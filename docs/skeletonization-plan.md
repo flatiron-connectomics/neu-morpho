@@ -562,10 +562,26 @@ split doubled cable_length), so it needs a deliberate call about inventing cable
 
 ### Later, not now
 
-**How do skeletons look at a coarser scale?** At scale 3 (64 nm) a whole-body trace
-costs 1/8 the memory of scale 2, which would make the per-body route comfortable
-and might be adequate for visualization. Untested, and worth an hour before
-committing to block-first complexity.
+**~~Skeletonize at a coarser scale to dodge the memory problem~~ — TESTED AND DEAD.**
+Scale 3 (64 nm) is cheap: 3.6 s versus 39 s on the largest body, ~8× less memory.
+But it **destroys the mask**, measured before any skeletonization:
+
+| body | components s2 → s3 | largest component's share |
+|---|---|---|
+| 59983817 | 2 → **16** | 96.3% → **41.2%** |
+| 79347718 | 9 → **94** | 77.9% → **53.5%** |
+| 43230132 | 13 → **207** | 94.7% → 77.2% |
+| 18166095 | 20 → **184** | 99.2% → 91.5% |
+
+Median process radius is ~72 nm — about **1.1 voxels at 64 nm** — so thin neurites
+sit at the resolution limit and shatter on downsampling. The skeleton consequences
+follow: cable 0.66×, tips 0.63×, B→A p90 15.5 voxels against the scale-2 NeuTu
+reference. There is no intermediate scale to try: the pyramid is powers of two, so
+the next step up from 32 nm is 64 nm.
+
+This is a property of the **data**, established on the mask itself, so no change to
+the skeletonizer can recover it. **Block-first with a `fix_borders` equivalent is
+the route**, not a coarser scale.
 
 **Mask denoising is available and was never used.** NeuTu has four
 pre-skeletonization cleanups — `m_removingBorder` (an 8-neighbour 2D majority
