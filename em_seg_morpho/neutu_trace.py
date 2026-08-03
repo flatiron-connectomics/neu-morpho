@@ -24,8 +24,11 @@ How this differs from kimimaro
 *global* maximum radius, plus a small DAF term as a "trickle of gradient so open
 spaces don't collapse". NeuTu has no such term and none is added here.
 
-**Invalidation.** ``EDT + 2`` voxels (``gui/zspgrowparser.cpp:344``), i.e.
-``scale=1.0, const=2``, against kimimaro's production ``1.5·DBF + 4.69``.
+**Invalidation.** NeuTu uses ``EDT + 2`` voxels
+(``maskExpansionRadius``, ``gui/zspgrowparser.cpp:296``), against kimimaro's
+production ``1.5·DBF + 4.69``. **We default to ``EDT + 8``** — see
+:data:`INVALIDATION_CONST`, which explains why that is compensation for a
+different target-selection rule rather than a porting error.
 
 **No soma mode.** kimimaro detects somata and specially handles the root. NeuTu
 has no equivalent, and Megaphragma is ~97% somaless.
@@ -67,9 +70,42 @@ from __future__ import annotations
 
 import numpy as np
 
-# NeuTu's defaults, in voxels (gui/zspgrowparser.cpp:344).
+# NeuTu's own invalidation, in voxels: ball radius EDT + 2 at each path voxel
+# (`maskExpansionRadius = 2.0`, gui/zspgrowparser.cpp:296, applied via
+# `DistanceWeight(v) = sqrt(v)` on the squared-distance map).
 INVALIDATION_SCALE = 1.0
-INVALIDATION_CONST = 2.0
+NEUTU_CONST = 2.0
+
+# What we actually default to, and it is NOT NeuTu's value.
+#
+# This is **compensation for weaker target selection, not fidelity.** NeuTu picks
+# the next branch by maximum un-invalidated length, so it extracts the largest new
+# branch first and its invalidation ball consumes the territory that would
+# otherwise resurface as many small branches. We pick by max-DAF
+# (`CachedTargetFinder`), which can start on a short spur, invalidate little, and
+# leave the same ground to be covered by many more paths. A larger ball buys back
+# per path what NeuTu's ordering buys by choosing well.
+#
+# Measured against NeuTu over the 12-body benchmark (median ratios, port:NeuTu):
+#
+#              const=2      const=8
+#   tips        4.07x        1.04x
+#   cable         --         1.06x
+#   nodes         --         0.75x
+#   B->A p90     2.16         2.30      (what we fail to cover -- barely worse)
+#
+# TWO CAVEATS, because a tuned constant is a liability:
+#   1. It is in VOXELS, so it is tied to `skeleton_scale`. At scale 2 (32 nm) this
+#      is EDT + 256 nm; at scale 1 it would be EDT + 128 nm and mean something
+#      different. **Re-sweep it if the scale changes.**
+#   2. 256 nm is large next to a median process radius of ~55-72 nm, so it can
+#      invalidate a genuinely separate neurite running parallel within that
+#      distance. This shows up as rising B->A p90 on the two largest thick bodies
+#      (6308993 3.81 -> 7.23, 45892915 3.74 -> 7.60) and is the strongest argument
+#      for doing the target-selection rewrite instead.
+#
+# Pass `const=NEUTU_CONST` for the mechanically faithful behaviour.
+INVALIDATION_CONST = 8.0
 # NeuTu's `minimalLength`, the branch-rejection threshold, in voxels.
 MIN_LENGTH = 10.0
 # Consecutive rejected branches before extraction stops. NeuTu stops on the

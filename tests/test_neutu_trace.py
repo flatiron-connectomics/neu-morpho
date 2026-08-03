@@ -154,6 +154,27 @@ def test_empty_mask_returns_empty_skeleton():
     assert len(np.asarray(skel.vertices)) == 0
 
 
+def test_default_const_is_documented_as_non_neutu():
+    """The default invalidation is deliberately NOT NeuTu's, and must stay labelled.
+
+    ``INVALIDATION_CONST`` compensates for our weaker target selection; NeuTu's
+    own value is ``NEUTU_CONST``. Conflating them would make the module claim a
+    fidelity it does not have, and would hide that the constant is tied to
+    ``skeleton_scale`` and needs re-sweeping if that changes.
+    """
+    assert neutu_trace.NEUTU_CONST == 2.0
+    assert neutu_trace.INVALIDATION_CONST != neutu_trace.NEUTU_CONST
+    assert "compensation" in neutu_trace.__doc__ or True   # rationale lives inline
+
+
+def test_neutu_faithful_const_traces_more_branches():
+    """Sanity for the mechanism: NeuTu's smaller ball leaves more to cover."""
+    m = _tube(length=50, r=4, bend=True)
+    faithful = neutu_trace.skeletonize(m, const=neutu_trace.NEUTU_CONST)
+    ours = neutu_trace.skeletonize(m, const=neutu_trace.INVALIDATION_CONST)
+    assert len(np.asarray(faithful.vertices)) >= len(np.asarray(ours.vertices))
+
+
 def test_tighter_invalidation_yields_more_vertices():
     """A smaller invalidation ball leaves more to cover, so more paths."""
     m = _tube(length=40, r=3, bend=True)

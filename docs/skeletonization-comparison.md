@@ -99,23 +99,34 @@ difference being a slightly more generous crop.
 
 | | kimimaro production | NeuTu minlen=10 | port |
 |---|---:|---:|---:|
-| median fill | 68% | 71% | **75%** |
 | median nodes | 3,195 | **912** | 1,417 |
-| median spill | **8%** | 17% | 13% |
 | median radius error | 0.00 vox | −0.50 vox | 0.00 vox |
 | total time, 12 bodies | 1,703 s | **83 s** | 147 s |
+| median fill *(see below)* | 68% | 71% | 75% |
+| median spill *(see below)* | 8% | 17% | 13% |
 
-The port (`neutu_trace` + `swc_simplify`) sits at **1.21× NeuTu's node count with
-+3.2 points of fill, ahead on 10 of 12 bodies**, and against what ships today —
-kimimaro production — it is **2.3× fewer nodes, +7 points of fill, 12× faster**,
-with radii still exact inscribed radii.
+### Read fill and spill as diagnostics, not as scores
 
-**What produced the node count was branch rejection, not node spacing.** Before
-NeuTu's `minimalLength` was ported the same code sat at 2.4× NeuTu's nodes; the
-natural read was that it placed nodes too densely, and that read was wrong — per
-100 voxels of cable it was already *sparser* than NeuTu (10.3 vs 16.6 on body
-6308993). It simply traced 10.5× more cable, with 5,022 tips against NeuTu's 116.
-The lever is which branches get traced at all. See step 5 of the plan.
+**Fill is confounded by branch count** — more branches fill more, so it rewards a
+skeletonizer that invents neurites. This was learned the hard way: the port was
+reported as "+3.2 points of fill, ahead on 10 of 12 bodies", and that framing is
+**withdrawn**. Per unit cable NeuTu is *more* fill-efficient (0.46 vs 0.21 fill
+per 1k cable on body 45813451), and the port got its higher number by carrying
+5–10× the tip count. On body 4978519 the port was strictly worse: 10× the tips
+and *less* fill.
+
+**Spill is not an error signal here either.** The segmentation is dense — every
+voxel belongs to some segment, and 0.0% of spill lands on background — and many
+segments are one neuron incorrectly split, so a tube crossing into a neighbour is
+often reclaiming its own neurite. `skelmetrics.spill_by_neighbour_size` grades
+spill by neighbour size to test that, and it cannot settle it: moving the
+fragment/large boundary one bin swings "spill into large neighbours" from 13% to
+1%, because nearly every neighbour involved sits in that band.
+
+**Optimise against `skelmetrics.agreement` instead** — bidirectional centreline
+distance to a reference skeleton, plus node/tip/cable ratios. There is not enough
+ground truth to do better, so NeuTu is the reference because it behaves well
+enough, not because it is right.
 
 **NeuTu's fill advantage is real but modest and not uniform**: +3 points at the
 median, ahead on 9 of 12 bodies, and *behind* on body 79347718 (55% vs 66%). The

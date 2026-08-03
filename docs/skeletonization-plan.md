@@ -4,21 +4,28 @@ Background and evidence: `docs/skeletonization-comparison.md`. Read that first �
 in particular the "Corrections" section, which lists conclusions already established
 as wrong.
 
-**Status (2026-07-31). All five steps are done.** `em_seg_morpho/neutu_trace.py`
-(tracing, with NeuTu's cost and `minimalLength`) plus
-`em_seg_morpho/swc_simplify.py` (node reduction) now match NeuTu's node economy
-while filling more:
+**Status. All five steps are done, and the output now matches NeuTu's.**
+`em_seg_morpho/neutu_trace.py` (tracing) plus `em_seg_morpho/swc_simplify.py`
+(node reduction), scored by `skelmetrics.agreement` over the 12-body benchmark:
 
-| | kimimaro prod | NeuTu L10 | **port** |
-|---|---:|---:|---:|
-| median fill | 68% | 71% | **75%** |
-| median nodes | 3,195 | **912** | 1,417 |
-| median spill | **8%** | 17% | 13% |
-| total time, 12 bodies | 1,703 s | **83 s** | 147 s |
+| median ratio, port : NeuTu | |
+|---|---:|
+| tips | **1.04×** |
+| cable | 1.06× |
+| nodes | 0.75× |
+| centreline distance A→B / B→A | 0.82 / 0.78 voxels |
 
-Against NeuTu: **1.21× the nodes, +3.2 points of fill, ahead on 10 of 12 bodies.**
-Against kimimaro production, which is what ships today: **2.3× fewer nodes, +7
-points of fill, 12× faster**, with radii unchanged as exact inscribed radii.
+Sub-voxel centreline agreement, equivalent branching, fewer nodes. Against
+kimimaro production — what ships today — it is roughly **2× fewer nodes and
+10× faster**.
+
+**Do not read the fill/spill numbers in the comparison doc as a score.** Fill is
+confounded by branch count, so it rewards inventing neurites; an earlier revision
+of this plan claimed a fill win that was exactly that artefact. See the
+Corrections section there.
+
+**One mechanism is still not NeuTu's** — target selection — and it is papered
+over by a tuned constant (`const=8` rather than NeuTu's 2). See step 5.
 
 Step 4 closed with no code. What remains is **wiring it into the pipeline** —
 see "Integration" at the bottom, which is not a small change.
@@ -261,20 +268,52 @@ body 45813451). Un-invalidated length is bimodal — a branch either covers real
 volume or nearly none — so the threshold separates cleanly instead of trading
 off. NeuTu's default of 10 is fine; do not sweep it.
 
-### One deliberate departure
+### Target selection is still not NeuTu's, and that is the open item
 
-NeuTu **stops extraction globally** once the best remaining branch is short. This
-port *rejects and continues* — the branch is skipped but its territory is still
-invalidated. NeuTu can afford the global stop because `extractLongestPath` picks
-the target maximising un-invalidated length; we pick max-DAF via
-`CachedTargetFinder`, and a global stop on a weaker target selector risks
-truncating a live arbor.
+NeuTu picks the next target by **maximum un-invalidated length**
+(`extractLongestPath`); we pick max-DAF via kimimaro's `CachedTargetFinder`. Two
+consequences, and the second is the one that cost real effort to find:
 
-The cost is that we still trace ~2× NeuTu's cable, concentrated in thick bodies
-(45892915: 1,611 nodes vs 442). **This is the remaining lever** if node count must
-come down further — implement target selection by un-invalidated length, then the
-global stop becomes safe. It would cost fill, since that extra cable is currently
-buying the +3.2 points.
+**The global stop is unusable with max-DAF.** NeuTu stops on the first short
+branch (`isPathAvailable = false`) because its selector guarantees the best
+remaining branch is the one it just tested. Ours does not, and stopping anyway
+truncates live arbor — B→A p90, i.e. what we fail to cover, on three bodies:
+
+| body | reject-and-continue | stop after 3 misses |
+|---|---:|---:|
+| 35668783 | 2.40 | **74.71** |
+| 16104493 | 2.17 | 17.03 |
+| 45813451 | 3.11 | 14.05 |
+
+So `patience` defaults to `None` (off).
+
+**Selection order, not the invalidation radius, drives branch count.** With
+NeuTu's own `const=2` the port carried a **4.07× median tip ratio**. That is not a
+porting error in the invalidation — NeuTu's radius really is `EDT + 2`
+(`maskExpansionRadius = 2.0`, `DistanceWeight(v) = sqrt(v)`, both confirmed in
+source). It is that NeuTu extracts the largest new branch first, so one
+invalidation ball consumes territory that otherwise resurfaces as many small
+branches.
+
+**The shipped workaround is `const = 8`**, which buys per path what NeuTu's
+ordering buys by choosing well. Validated on all 12 bodies:
+
+| median ratio, port : NeuTu | const=2 | const=8 |
+|---|---:|---:|
+| tips | 4.07× | **1.04×** |
+| cable | — | 1.06× |
+| nodes | — | 0.75× |
+| B→A p90 | 2.16 | 2.30 |
+
+Per-body tip ratio lands in 0.87–1.23×. See `INVALIDATION_CONST` for the two
+caveats — the constant is in voxels so it is tied to `skeleton_scale`, and at
+256 nm it can invalidate a genuinely separate neurite running parallel, which
+shows up as B→A p90 roughly doubling on the two largest thick bodies.
+
+**Whether to do the rewrite** (target selection by un-invalidated length, via
+pointer-jumping over the parent field, after which the global stop becomes sound)
+now rests on removing the tuned constant and recovering that thick-body p90 — not
+on branch count, which `const=8` already matches.
 
 ## Fallback — the NeuTu plugin
 
@@ -314,6 +353,10 @@ Two routes, in increasing order of work:
 
 ## Watch out for
 
+- **Do not optimise fill or spill.** Fill rewards inventing branches — the thing
+  we are trying to remove — and on a dense segmentation spill cannot distinguish
+  reclaiming a false split from trespassing. Optimise `skelmetrics.agreement`
+  against NeuTu. Both mistakes were made in this branch; see the comparison doc.
 - **Always pass `edges` to `skelmetrics`.** Scoring vertex spheres instead of swept
   capsules reversed the tool ranking once already.
 - **Don't port the `−0.5` radius correction.** Established harmful at these radii.

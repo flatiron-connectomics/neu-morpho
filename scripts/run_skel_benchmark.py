@@ -46,7 +46,8 @@ KIMI_PRODUCTION = {"scale": 1.5, "const_nm": 150.0,
 
 
 def run_one(rec: dict, out_dir: str, voxel_nm: float, neutu_bin: str,
-            minlen: int, kimi: bool, port: bool = True) -> dict:
+            minlen: int, kimi: bool, port: bool = True,
+            port_kw: dict | None = None) -> dict:
     body = rec["body_id"]
     res = {"body_id": body, "band": rec["band"], "methods": {}}
     mask = np.load(rec["mask_path"])
@@ -77,7 +78,7 @@ def run_one(rec: dict, out_dir: str, voxel_nm: float, neutu_bin: str,
         try:
             from em_seg_morpho import neutu_trace
 
-            s = neutu_trace.skeletonize(mask)
+            s = neutu_trace.skeletonize(mask, **(port_kw or {}))
             v = np.asarray(s.vertices, dtype=float)
             rad = np.asarray(s.radii, dtype=float)
             e = np.asarray(s.edges, dtype=int)
@@ -170,6 +171,14 @@ def main() -> int:
                     help="skip kimimaro — it is by far the slow half")
     ap.add_argument("--no-port", action="store_true",
                     help="skip em_seg_morpho.neutu_trace")
+    ap.add_argument("--port-scale", type=float, default=None,
+                    help="invalidation scale for the port (default: NeuTu's 1.0)")
+    ap.add_argument("--port-const", type=float, default=None,
+                    help="invalidation const in VOXELS for the port. NeuTu uses 2 "
+                         "(maskExpansionRadius); larger values compensate for our "
+                         "weaker target selection — see docs/skeletonization-plan.md")
+    ap.add_argument("--port-min-length", type=float, default=None,
+                    help="minimalLength in voxels (default: NeuTu's 10)")
     ap.add_argument("--only", help="comma-separated body ids")
     a = ap.parse_args()
 
@@ -187,8 +196,13 @@ def main() -> int:
           f"{', kimimaro skipped' if a.no_kimimaro else ''}")
     results, t_start = [], time.time()
     with ProcessPoolExecutor(max_workers=a.workers) as ex:
+        port_kw = {k: v for k, v in (("scale", a.port_scale),
+                                     ("const", a.port_const),
+                                     ("min_length", a.port_min_length))
+                   if v is not None}
         futs = {ex.submit(run_one, r, a.out_dir, man["voxel_nm"], a.neutu_bin,
-                          a.minlen, not a.no_kimimaro, not a.no_port): r["body_id"]
+                          a.minlen, not a.no_kimimaro, not a.no_port,
+                          port_kw): r["body_id"]
                 for r in bodies}
         for fut in as_completed(futs):
             body = futs[fut]
@@ -206,6 +220,7 @@ def main() -> int:
     results.sort(key=lambda r: -r.get("mask_voxels", 0))
     out = {"manifest": a.manifest, "voxel_nm": man["voxel_nm"], "scale": man["scale"],
            "neutu_minlen": a.minlen, "kimimaro_production": KIMI_PRODUCTION,
+           "port_params": port_kw,
            "wall_seconds": round(time.time() - t_start, 1), "results": results}
     p = os.path.join(a.out_dir, "results.json")
     with open(p, "w") as f:
