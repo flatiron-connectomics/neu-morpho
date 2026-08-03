@@ -101,6 +101,14 @@ def _parse_args(argv=None):
     p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
     p.add_argument("--mesh-scale", type=int, default=2)
     p.add_argument("--skel-scale", type=int, default=2)
+    p.add_argument("--tracer", default="kimimaro", choices=("kimimaro", "neutu"),
+                   help="stage-1 skeletonizer. 'neutu' is em_seg_morpho.neutu_trace, "
+                        "which reproduces NeuTu's skeletons at ~2.6x fewer vertices "
+                        "but ~1.7x the per-block time (see docs/skeletonization-plan.md)")
+    p.add_argument("--neutu-cost", default="voxel", choices=("voxel", "edge"),
+                   help="--tracer neutu only: 'edge' applies NeuTu's symmetric edge "
+                        "cost and agrees with NeuTu more closely, but its memory was "
+                        "only measured whole-body, not per block")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,
@@ -289,6 +297,9 @@ def _main(args) -> int:
             "dst": dst, "work_dir": work, "stages": stages,
             "block_shape": list(block), "roi": list(roi_base) if roi_base else None,
             "scales": {"index": idx_s.index, "mesh": mesh_s.index, "skel": skel_s.index},
+            # which skeletonizer produced this run's output — the whole point of
+            # run_plan is being able to tell later what made the data
+            "tracer": args.tracer, "neutu_cost": args.neutu_cost,
             "planned_blocks": planned,
             "seg_scales": [
                 {"scale": c["scale"], "shape": list(c["shape"]),
@@ -301,7 +312,8 @@ def _main(args) -> int:
     t_start = time.time()
     mesh_cfg = MeshConfig(mesh_scale=mesh_s.index, block_shape=block)
     skel_cfg = SkeletonConfig(skeleton_scale=skel_s.index, block_shape=block,
-                              anisotropy=skel_s.voxel_size)
+                              anisotropy=skel_s.voxel_size,
+                              tracer=args.tracer, neutu_cost=args.neutu_cost)
     resume = not args.no_resume
     summaries: dict[str, dict] = {}
     timing: dict[str, float] = {}          # per-stage minutes, for run_summary
