@@ -590,15 +590,15 @@ So the default `join_radius_nm` of 2 voxels is adequate as measured, and the hal
 
 ### Two decisions to carry into the tracer swap
 
-**Expose `cost="edge"` in `SkeletonConfig`** (requested 2026-08-03). Not added yet
-because `SkeletonConfig` configures the kimimaro block-first stages and
-`neutu_trace` is not wired into them, so the field would be a knob nothing reads.
-It earns its place: over 12 bodies it takes cable ratio to 1.00× and centreline
-distance from 0.83 to 0.66 voxels, and runtime is a wash. **But it roughly doubles
-peak memory** (6.4 GB vs 5.5 GB on the largest body, scaling with edge count), so
-pair it with a component-size cap that falls back to `"voxel"` — which costs
-nothing, since `"edge"` gives no benefit on the largest bodies anyway. Under
-block-first the components are small and the cap may never fire; unmeasured.
+**`cost="edge"` is now wired in as `SkeletonConfig.neutu_cost`** — done, and
+validated at the source so a mistyped value raises rather than silently falling
+through to the voxel path. It still **defaults to `"voxel"`**, deliberately: the
+block-mode timing (186.5 s/block) and the memory figures were taken that way, while
+`"edge"` was only ever measured whole-body, where it roughly doubled peak memory
+(6.4 vs 5.5 GB on a 10⁶-voxel component). Block components are far smaller so that
+probably does not carry over — but it is unmeasured, and the earlier plan to pair it
+with a component-size cap was sized for the whole-body path, not this one. Measure
+block-mode memory before changing the default.
 
 **Gap-bridging (`reconnect`, `maximalDistance=50`) is a product decision, not a
 fix.** NeuTu joins disconnected roots within 50 voxels (1,600 nm at 32 nm), which

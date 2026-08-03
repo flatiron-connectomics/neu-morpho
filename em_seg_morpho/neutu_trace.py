@@ -204,6 +204,10 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
     import cc3d
     from osteoid import Skeleton
 
+    if cost not in ("voxel", "edge"):
+        # Falling through to the voxel path would make a mistyped config field read
+        # as enabled while doing nothing — the worst kind of knob.
+        raise ValueError(f"cost must be 'voxel' or 'edge', got {cost!r}")
     if const is None:
         const = INVALIDATION_CONST
     labels = np.asfortranarray(np.asarray(mask_zyx).astype(np.uint8))

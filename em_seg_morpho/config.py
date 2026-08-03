@@ -78,6 +78,20 @@ class SkeletonConfig:
     neutu_min_length_vox: float = 10.0
     neutu_simplify: bool = True        # region_sample + optimal_downsample
 
+    # How the path cost is applied. "voxel" uses dijkstra3d's per-voxel field, whose
+    # effective edge cost is d*f(destination); "edge" builds the graph explicitly and
+    # applies NeuTu's symmetric d*[f(u)+f(v)] via scipy. The two agree only for
+    # uniform step lengths, and inside real bulbs the per-voxel routes cost ~10% more
+    # under NeuTu's own cost (0 of 16 paths matched). Over the 12-body benchmark
+    # "edge" is closer to NeuTu on every axis -- cable 1.00x vs 1.07x, centreline 0.66
+    # vs 0.83 voxels -- and runtime is a wash.
+    #
+    # It still defaults to "voxel" because the block-mode timing and memory figures
+    # were taken that way; "edge" was only measured whole-body, where it roughly
+    # doubled peak memory (6.4 vs 5.5 GB on a 10^6-voxel component). Block components
+    # are far smaller so that likely does not carry over, but it is unmeasured.
+    neutu_cost: str = "voxel"
+
     anisotropy: tuple[float, float, float] = (8.0, 8.0, 8.0)   # (z, y, x) nm at skeleton_scale
     skeleton_scale: int = 2
     block_shape: tuple[int, int, int] = (256, 256, 256)        # block size at skeleton_scale

@@ -71,3 +71,25 @@ def test_unknown_tracer_raises():
     m = _two_body_block()
     with pytest.raises(ValueError, match="unknown tracer"):
         skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="nope"))
+
+
+@pytest.mark.parametrize("cost", ["voxel", "edge"])
+def test_neutu_cost_mode_reaches_the_tracer(cost):
+    """cfg.neutu_cost must actually change the routing, not just be accepted.
+
+    A config field that is silently ignored is worse than none — it reads as enabled.
+    """
+    m = _two_body_block()
+    out = skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="neutu",
+                                                        neutu_cost=cost))
+    assert set(out) == {7, 9}
+    for skel in out.values():
+        v = np.asarray(skel.vertices, float)
+        assert len(v) and v[:, 0].max() > 200.0        # still nm, still traced
+
+
+def test_neutu_cost_is_validated_not_silently_ignored():
+    m = _two_body_block()
+    with pytest.raises(ValueError, match="voxel|edge"):
+        skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="neutu",
+                                                      neutu_cost="nonsense"))
