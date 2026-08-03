@@ -468,3 +468,25 @@ def test_short_boundary_crossing_stub_survives_min_length():
     assert not reaches_face(False), (
         "test is vacuous — the spur survives without fix_borders, so it does not "
         "demonstrate the exemption")
+
+
+def test_keep_single_object_prevents_silent_body_loss():
+    """A body shorter than min_length must survive, not vanish.
+
+    NeuTu's keepingSingleObject: if min_length rejects every branch, keep the
+    longest. Without it a small body disappears from stage 1 with no record —
+    caught by the end-to-end op writing 1 of 2 bodies. That bypasses the pipeline's
+    dust reporting, which is where short components are supposed to be accounted
+    for.
+    """
+    m = np.zeros((20, 20, 20), dtype=np.uint8)
+    zz, yy, xx = np.indices(m.shape)
+    m[((zz - 10) ** 2 + (yy - 10) ** 2 + (xx - 10) ** 2) <= 9] = 1   # tiny blob
+    m = np.asfortranarray(m)
+
+    kept = neutu_trace.skeletonize(m, min_length=50.0, keep_single_object=True)
+    dropped = neutu_trace.skeletonize(m, min_length=50.0, keep_single_object=False)
+    assert len(np.asarray(kept.vertices)) > 0, "body lost despite keep_single_object"
+    assert len(np.asarray(dropped.vertices)) == 0, (
+        "test is vacuous — the body survives even with the guard off, so it does "
+        "not demonstrate anything")

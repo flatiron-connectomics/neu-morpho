@@ -185,11 +185,21 @@ def _skeletonize_block_neutu(labels, present, cfg: SkeletonConfig) -> dict[int, 
             v, r, e = swc_simplify.simplify(v, r, e)
             if not len(v):
                 continue
+        # Build a FRESH skeleton rather than mutating the one neutu_trace returned.
+        # osteoid carries attribute arrays beyond vertices/radii/edges — vertex_types
+        # among them — sized to the original vertex count. Reassigning vertices after
+        # swc_simplify shrinks them leaves those stale, and to_precomputed then
+        # refuses the fragment ("Number of uint8 vertex_types (34) must match the
+        # number of vertices (16)"). Unit tests on vertices/radii/edges cannot see it;
+        # the end-to-end op can.
+        from osteoid import Skeleton
+
         v = v + lo                                            # crop -> block voxels
-        skel.vertices = (v * vs).astype(np.float32)            # voxels -> nm
-        skel.radii = (r * float(vs[0])).astype(np.float32)
-        skel.edges = np.asarray(e, dtype=np.uint32)
-        out[body_id] = skel
+        fresh = Skeleton(vertices=(v * vs).astype(np.float32),
+                         edges=np.asarray(e, dtype=np.uint32).reshape(-1, 2),
+                         segid=body_id)
+        fresh.radii = (r * float(vs[0])).astype(np.float32)    # voxels -> nm
+        out[body_id] = fresh
     return out
 
 

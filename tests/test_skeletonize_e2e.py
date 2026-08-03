@@ -361,3 +361,50 @@ def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
     out2 = OutputConfig(dst=str(tmp_path / "out2" / "segmentation"), work_dir=str(tmp_path / "out2"))
     s2 = skeletonize_segments(src, out2, _cfg(), client=None)
     assert s2["status_counts"].get("written") == 1
+
+
+# --------------------------------------------------------------------------- #
+# The neutu tracer through the same pipeline
+# --------------------------------------------------------------------------- #
+def test_neutu_tracer_end_to_end_welds_a_spanning_body(tmp_path):
+    """The whole point of fix_borders, checked through the real two-stage op.
+
+    A body spanning three blocks must come back as ONE component covering the full
+    extent. If neutu fragments do not meet at the seams, stage 2's narrow join
+    cannot weld them and this arrives as three stubs.
+
+    min_length is left at its default so the test exercises the interaction that
+    matters: border targets are mandatory and exempt, so a fragment reaches each
+    face even when its cable inside that block is short.
+    """
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
+                       work_dir=str(tmp_path / "out"))
+    cfg = replace(_cfg(), tracer="neutu")
+
+    summary = skeletonize_segments(src, out, cfg, db_path=None, client=None)
+    out_dir = summary["out_dir"]
+    assert summary["num_blocks"] == 3
+    assert summary["status_counts"].get("written") == 2
+    assert len(os.listdir(os.path.join(summary["chunked_dir"], "7"))) == 3
+
+    rod = _load(out_dir, 7)
+    assert len(rod.components()) == 1, (
+        f"neutu fragments did not weld: {len(rod.components())} components")
+    z = rod.vertices[:, 2]
+    assert z.min() <= 16 and z.max() >= 736, f"z extent {z.min()}..{z.max()}"
+    assert rod.cable_length() > 700
+
+
+def test_neutu_tracer_radii_are_nm_through_the_pipeline(tmp_path):
+    """Units survive stage 1 -> fragment store -> stage 2 -> precomputed."""
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
+                       work_dir=str(tmp_path / "out"))
+    summary = skeletonize_segments(src, out, replace(_cfg(), tracer="neutu"),
+                                   db_path=None, client=None)
+    rod = _load(summary["out_dir"], 7)
+    r = np.asarray(rod.radius, float)
+    # the rod is 4 voxels across at 8 nm/voxel, so radii are ~8-16 nm, never ~1-2
+    assert r.max() >= 6.0, f"radii look like voxels, max {r.max():.2f}"
+    assert r.max() <= 8.0 * 6

@@ -128,6 +128,21 @@ SKELETON_RADIUS = 3.0
 # _truncate_at_skeleton. NeuTu always does it.
 ATTACH_AT_SKELETON = True
 
+# NeuTu's `keepingSingleObject` (true in the config we pass, and misleadingly named —
+# the UI calls it "keep short object"). If min_length rejects every branch of a
+# component, keep its longest path anyway:
+#
+#     if (pathArray.empty() && m_keepingSingleObject)
+#       pathArray.push_back(parser.extractLongestPath(NULL, false));
+#     -- gui/zstackskeletonizer.cpp:366
+#
+# Without it a body shorter than min_length disappears with no record, which the
+# end-to-end op caught (1 of 2 bodies written). Silent loss is worse than dropped
+# cable: the pipeline reports short components as dust at stage 2
+# (postprocess_dust_nm), and that reporting is the project's discipline — a body
+# vanishing in stage 1 bypasses it entirely.
+KEEP_SINGLE_OBJECT = True
+
 
 def neutu_pdrf(DBF: np.ndarray) -> np.ndarray:
     """NeuTu's local path cost ``1/(1 + r²)``, on a **voxel-unit** DBF.
@@ -163,6 +178,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 patience: int | None = PATIENCE, cost: str = COST,
                 attach_at_skeleton: bool = ATTACH_AT_SKELETON,
                 fix_borders: bool = False, face_targets=None,
+                keep_single_object: bool = KEEP_SINGLE_OBJECT,
                 dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
@@ -238,7 +254,9 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
         skel = _trace_component(sub, scale=scale, const=const,
                                 min_length=min_length, patience=patience,
                                 cost=cost, attach_at_skeleton=attach_at_skeleton,
-                                border_targets=bt, max_paths=max_paths)
+                                border_targets=bt,
+                                keep_single_object=keep_single_object,
+                                max_paths=max_paths)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -253,7 +271,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
 def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
                      patience=PATIENCE, cost=COST,
                      attach_at_skeleton=ATTACH_AT_SKELETON, border_targets=None,
-                     max_paths=None, dbf=None):
+                     keep_single_object=KEEP_SINGLE_OBJECT, max_paths=None,
+                     dbf=None):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -373,6 +392,12 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
             if patience is not None and misses >= patience:
                 break                       # NeuTu's global stop; see the docstring
 
+    if not paths and keep_single_object:
+        # every branch was too short: keep the longest rather than lose the
+        # component silently (NeuTu's keepingSingleObject)
+        fallback = path_to(farthest)
+        if len(fallback):
+            paths = [fallback]
     if not paths:
         return Skeleton()
     skel = Skeleton.simple_merge([Skeleton.from_path(p) for p in paths]).consolidate()
