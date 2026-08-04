@@ -721,11 +721,18 @@ invalidates the NeuTu reference comparisons, so it needs its own baseline.
 ## Removed
 
 Residue from the dead ends above, deleted 2026-08-03 once `neutu` became the
-default. **Everything here is restorable from commit `b531515`** (`git show
-b531515:<path>`, or `git checkout b531515 -- <path>` for the whole-file deletions).
-Nothing removed was on the production path, and none of it had a test — which is
-itself why it is listed: each was reachable-but-never-reached, the state that reads
-as a supported option and is not one.
+default. Nothing removed was on the production path, and none of it had a test —
+which is itself why it is listed: each was reachable-but-never-reached, the state
+that reads as a supported option and is not one.
+
+**None of it ever existed on `main`** — every item was added and removed inside the
+`skeleton-quality-benchmark` branch, so the table below is the record, not the git
+history. The last commit that still had them all is `b531515` (`git show
+b531515:<path>`); that SHA survives only if this branch was merged with a merge
+commit, since squash and rebase merges rewrite it. Deliberately left untagged: the
+judgement was that none of this is worth rolling back to. If you disagree later, tag
+it before the branch is pruned. The pre-`neutu` behaviour, which *is* worth keeping,
+is tagged separately as **`last-kimimaro-default`**.
 
 | Removed | Was | Why it went |
 |---|---|---|
