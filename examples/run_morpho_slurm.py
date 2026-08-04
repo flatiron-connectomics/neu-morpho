@@ -12,13 +12,13 @@ idempotent, so re-running the same command resumes.
     python examples/run_morpho_slurm.py --src ... \\
         --dst /mnt/ceph/.../morpho/segmentation --work-dir /mnt/ceph/.../morpho \\
         --config configs/dask-local.yaml --workers 4 \\
-        --roi 0,0,0,512,2048,2048 --stages index,mesh,skel
+        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
     # 2. the same ROI on SLURM, surviving logout, publishing to s3
     nohup python -u examples/run_morpho_slurm.py --src ... \\
         --dst s3://bucket/sample3/segmentation --work-dir /mnt/ceph/.../morpho \\
         --config configs/dask-slurm-any.yaml --workers 48 \\
-        --roi 0,0,0,512,2048,2048 --stages index,mesh,skel > run.log 2>&1 &
+        --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
 
 **--dst is the published volume; --work-dir is everything else.** --dst holds the
@@ -32,7 +32,9 @@ clear --dst and a resumed run would skip everything and report success having
 written nothing. Each stage refuses to resume when its manifest records completed
 work but its output ``info`` is gone; --no-resume is the explicit override.
 
-The ROI is in **mesh/skeleton-scale voxels** and filters blocks on the *global*
+The ROI is in the voxels of **--roi-scale, which is required with --roi** — the same
+six numbers name a box 4x smaller per pyramid level, and the wrong scale silently
+processes the wrong region rather than failing. It filters blocks on the *global*
 grid, so widening it later re-uses everything already done rather than redoing it
 (see em_seg_morpho/roi.py). Drop --roi for the whole volume.
 
@@ -94,9 +96,11 @@ def _parse_args(argv=None):
                    help="source scales to copy in the seg stage: 'all', a range "
                         "like '1-6', or a comma list. Scale 0 usually dominates "
                         "the cost by an order of magnitude — check the log line")
-    p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 in mesh/skeleton-scale voxels")
+    p.add_argument("--roi", help="z0,y0,x0,z1,y1,x1 voxels, at --roi-scale")
     p.add_argument("--roi-scale", type=int, default=None,
-                   help="scale the --roi values are given in (default: --mesh-scale)")
+                   help="scale the --roi values are given in. REQUIRED with --roi: "
+                        "the same six numbers name a different box at every scale, "
+                        "and guessing wrong silently processes the wrong region")
 
     p.add_argument("--index-scale", type=int, default=2, help="scale to scan for bboxes")
     p.add_argument("--mesh-scale", type=int, default=2)
@@ -142,7 +146,22 @@ def _parse_args(argv=None):
     p.add_argument("--store-logs", action="store_true",
                    help="keep TensorStore's benign S3 credential-chain logging "
                         "(suppressed by default; real errors are never suppressed)")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    # --roi-scale used to default to --mesh-scale. That is a silent default on a
+    # number that changes what gets processed: the same six values name a box 4x
+    # smaller per level, so an ROI meant for scale 0 read as scale 2 quietly
+    # processes 1/64th of the intended volume — and the run still succeeds, still
+    # reports blocks, still writes output. Nothing downstream can catch it, because
+    # a smaller ROI is indistinguishable from a deliberately smaller ROI. Be explicit.
+    if args.roi and args.roi_scale is None:
+        p.error("--roi-scale is required with --roi: the same six values name a "
+                "different box at every pyramid level, and the wrong one silently "
+                "processes the wrong region. Pass the scale the numbers are in "
+                "(e.g. --roi-scale 2).")
+    if args.roi_scale is not None and not args.roi:
+        p.error("--roi-scale has no effect without --roi")
+    return args
 
 
 def _ng_source(volume_dir: str) -> str:
@@ -234,6 +253,8 @@ def _main(args) -> int:
     # The ROI is quoted in one scale; convert it into each stage's own voxels
     # using real voxel sizes, so the same physical cube is used everywhere.
     roi_base = parse_roi(args.roi)
+    # _parse_args guarantees roi_scale is set whenever there is an ROI; with no ROI
+    # the value is unused (roi_for returns None either way).
     roi_scale = scales[args.roi_scale if args.roi_scale is not None else args.mesh_scale]
 
     def roi_for(target):
@@ -303,6 +324,8 @@ def _main(args) -> int:
             "command": " ".join(sys.argv),
             "dst": dst, "work_dir": work, "stages": stages,
             "block_shape": list(block), "roi": list(roi_base) if roi_base else None,
+            # without the scale the six ROI numbers are uninterpretable later
+            "roi_scale": args.roi_scale,
             "scales": {"index": idx_s.index, "mesh": mesh_s.index, "skel": skel_s.index},
             # which skeletonizer produced this run's output — the whole point of
             # run_plan is being able to tell later what made the data

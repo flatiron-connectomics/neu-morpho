@@ -18,12 +18,7 @@ def test_default_tracer_is_neutu():
     assert SkeletonConfig().neutu_cost == "voxel"
 
 
-def test_driver_default_tracer_matches_the_config_default():
-    """The driver always passes --tracer explicitly, so the two can drift apart.
-
-    If they do, ``SkeletonConfig()`` and a bare driver invocation quietly produce
-    different skeletons from the same command.
-    """
+def _driver():
     import importlib.util
     import pathlib
 
@@ -31,7 +26,48 @@ def test_driver_default_tracer_matches_the_config_default():
     spec = importlib.util.spec_from_file_location("_driver_for_test", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    args = mod._parse_args(["--src", "x", "--dst", "y", "--work-dir", "z"])
+    return mod
+
+
+BASE_ARGV = ["--src", "x", "--dst", "y", "--work-dir", "z"]
+
+
+def test_roi_requires_an_explicit_roi_scale():
+    """--roi without --roi-scale must fail, not silently assume --mesh-scale.
+
+    The failure it prevents is invisible: the same six values name a box 4x smaller
+    per level, so an ROI meant for scale 0 read as scale 2 processes 1/64th of the
+    volume — and the run still succeeds, still reports block counts, still writes
+    output. A smaller ROI is indistinguishable from a deliberately smaller one, so
+    nothing downstream can catch it.
+    """
+    mod = _driver()
+    with pytest.raises(SystemExit):
+        mod._parse_args(BASE_ARGV + ["--roi", "0,0,0,64,64,64"])
+    args = mod._parse_args(BASE_ARGV + ["--roi", "0,0,0,64,64,64", "--roi-scale", "2"])
+    assert args.roi_scale == 2
+
+
+def test_roi_scale_without_roi_is_rejected():
+    """Silently ignoring it would read as 'the ROI applied', with no ROI at all."""
+    mod = _driver()
+    with pytest.raises(SystemExit):
+        mod._parse_args(BASE_ARGV + ["--roi-scale", "2"])
+
+
+def test_no_roi_needs_neither():
+    mod = _driver()
+    args = mod._parse_args(BASE_ARGV)
+    assert args.roi is None and args.roi_scale is None
+
+
+def test_driver_default_tracer_matches_the_config_default():
+    """The driver always passes --tracer explicitly, so the two can drift apart.
+
+    If they do, ``SkeletonConfig()`` and a bare driver invocation quietly produce
+    different skeletons from the same command.
+    """
+    args = _driver()._parse_args(BASE_ARGV)
     assert args.tracer == SkeletonConfig().tracer
     assert args.neutu_cost == SkeletonConfig().neutu_cost
 
