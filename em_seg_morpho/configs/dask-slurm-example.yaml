@@ -1,0 +1,58 @@
+# EXAMPLE SLURM config — copy it, edit the marked lines, point --config at your copy.
+#
+#     em-seg-morpho --config /path/to/my-slurm.yaml ...
+#
+# Every value below is a placeholder except the memory-manager block at the bottom,
+# which is not site-specific and should be carried over verbatim. dask-jobqueue
+# submits the sbatch itself; this file is its `jobqueue.slurm` section plus dask
+# settings, so anything dask-jobqueue accepts works here.
+#
+# --- how to size it -------------------------------------------------------------
+# The peak memory is ONE BLOCK, not one body — that is the point of the block-first
+# design, and it is what makes the sizing predictable. A 256^3 uint64 block is
+# 128 MB; the TEASAR distance transforms are a few multiples of that, and the mesher
+# holds the mesh set for the labels in that block. Single-digit GB per worker is
+# ample. Measured on a real dense 256^3 block with ~1,200 allowlisted labels: 1.6 GB
+# peak per worker process.
+#
+# `memory` is the whole job's allocation and `processes` splits it into that many
+# workers, so memory/processes is the per-worker budget — keep it comfortably above
+# that per-block peak. If you raise --block to 512^3 (8x the voxels), drop
+# `processes` to keep the ratio.
+#
+# Prefer NOT to constrain the node type unless you need to. A partition usually
+# holds several, and sizing to the smallest keeps the job eligible on all of them,
+# which starts sooner than waiting for the biggest.
+jobqueue:
+  slurm:
+    cores: 64                # EDIT ME: <= the smallest eligible node's core count
+    processes: 24            # EDIT ME: workers per job; memory/processes per worker
+    memory: 900GB            # EDIT ME: <= the smallest eligible node's memory
+    walltime: "12:00:00"     # every stage is idempotent — a killed job just resumes
+
+    account: your-account    # EDIT ME: -A
+    queue: your-partition    # EDIT ME: --partition
+
+    name: em-seg-morpho
+    log-directory: /path/to/dask-job-logs   # EDIT ME: somewhere with room; not $HOME
+
+    # To pin a node type (usually unnecessary — it shrinks the eligible pool):
+    #   job-extra-directives: ["--constraint=<feature>"]
+
+distributed:
+  scheduler:
+    work-stealing: true      # stages have long tails; let idle workers steal
+  worker:
+    memory:
+      # DISABLE dask's memory manager, all four keys. Use `false`, NOT 0.0 — 0.0
+      # reads as "spill at 0% used", i.e. spill constantly. Spilling a block's
+      # working set to disk is slower than letting the block finish.
+      target: false
+      spill: false
+      pause: false
+      terminate: false
+  admin:
+    tick:
+      # Long single-threaded C calls (TEASAR, Draco) block the event loop; without
+      # this the log fills with tick warnings that are not actually problems.
+      limit: 3h

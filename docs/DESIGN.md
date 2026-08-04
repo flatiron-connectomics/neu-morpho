@@ -249,7 +249,7 @@ the "need a body's bbox before we can crop it" dependency.
   `postprocess_tick_nm` (all in nm, since vertices are nm).
 - `OutputConfig`.
 
-## Running a job (`examples/run_morpho_slurm.py`, `configs/`)
+## Running a job (`em-seg-morpho` / `em_seg_morpho/cli.py`)
 
 One driver runs `index -> allowlist -> mesh -> skel` (`--stages` picks a subset)
 against a dask cluster from `em_blockrun.start_dask`, or in-process with
@@ -264,7 +264,7 @@ against a dask cluster from `em_blockrun.start_dask`, or in-process with
   block index would then mean different data in two runs, so resume would reuse
   the wrong fragment. A body straddling the ROI edge is truncated until its
   neighbouring blocks run.
-- **Scales (`scales.py`)** — the driver takes scale *integers* and reads each
+- **Scales (`scales.py`)** — the CLI takes scale *integers* and reads each
   level's real voxel size from the precomputed `info` / zarr OME metadata.
   `ScaleInfo.factor_from` gives true per-axis factors, which are routinely not
   `2**index`: a pyramid that halves x/y but leaves z alone has factor `(1,2,2)`.
@@ -368,7 +368,7 @@ the alignment bug reintroduced at the viewing layer.
 
 `precomputed.link_subresources` writes the `info` keys and validates each target
 directory's `@type`, because pointing a volume at the wrong subdirectory fails
-*silently* in the viewer. The driver calls it last, since the `seg` stage rewrites
+*silently* in the viewer. The CLI calls it last, since the `seg` stage rewrites
 `info` and would otherwise drop the keys.
 
 [spec]: https://github.com/google/neuroglancer/blob/master/src/datasource/precomputed/volume.md
@@ -436,7 +436,7 @@ em-blockrun rather than answered there.)
 retry would be skipped forever. Ops resume on `_progress.is_complete`, which
 excludes `failed`, never on `is_done`.
 
-The driver logs failed body ids per stage and **exits non-zero**, so a scripted
+The CLI logs failed body ids per stage and **exits non-zero**, so a scripted
 pipeline does not mistake a partial result for a clean one.
 
 ### Knowing when to stop isolating
@@ -510,7 +510,16 @@ em_seg_morpho/
     ├── index_segments.py       # parallel scan -> per-body metrics DB (bbox/count)
     └── _progress.py            # per-group manifest tallies
 
-examples/run_morpho_slurm.py  # the driver: index -> allowlist -> mesh -> skel
-configs/dask-{local,slurm-any}.yaml
+    ├── cli.py                  # the `em-seg-morpho` command: index -> mesh -> skel
+    ├── __main__.py             # so `python -m em_seg_morpho` is the same thing
+    └── configs/                # bundled dask configs (package DATA, shipped)
+        dask-local.yaml         #   the default
+        dask-slurm-example.yaml #   a template — copy and edit for your site
+
 scripts/sweep_postprocess.py  # standalone: choose dust/tick thresholds from data
+scripts/view_body_3d.py       # standalone: read a published body back, mesh + skeleton
 ```
+
+Site-specific dask configs and dataset allowlists are **not** in the repo — the
+top-level `configs/` directory is gitignored for exactly that. Point `--config` at
+your own file; the bundled names are a starting point, not a supported deployment.

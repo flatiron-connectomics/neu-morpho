@@ -157,7 +157,7 @@ def volume_exists(volume_dir: str) -> bool:
 
     The cheap liveness test for a destination — one request, and it works for
     object stores where there is no directory to stat. Used to catch a manifest
-    that has outlived the data it describes (see the driver's resume guard).
+    that has outlived the data it describes (see the CLI's resume guard).
     """
     return exists(volume_dir, "info")
 

@@ -9,7 +9,7 @@ safe to run as often as you like from any terminal:
     # measure a rate and extrapolate, by sampling the manifests twice
     python scripts/run_progress.py <work-dir> --sample 60
 
-Denominators come from ``run_plan.json``, which the driver writes at startup
+Denominators come from ``run_plan.json``, which the CLI writes at startup
 (ROI ∩ occupancy block counts, which are expensive to re-derive because they need
 an occupancy-array read). Without that file, absolute counts are still reported.
 

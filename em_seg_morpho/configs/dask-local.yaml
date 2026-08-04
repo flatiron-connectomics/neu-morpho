@@ -1,0 +1,17 @@
+# Local dask cluster — development and smoke tests. No scheduler, no cluster.
+#
+# Use this to prove a small --roi end to end before committing a real allocation.
+# `--workers N` becomes N local processes, so keep N well under your core count.
+jobqueue:
+  local: {}
+distributed:
+  worker:
+    memory:
+      # DISABLE dask's memory manager, all four keys. Use `false`, NOT 0.0 — 0.0
+      # reads as "spill at 0% used", i.e. spill constantly. Spilling a block's
+      # mesh or skeleton set to disk is slower than letting the block finish, and
+      # the peak is bounded by one block by design.
+      target: false
+      spill: false
+      pause: false
+      terminate: false
