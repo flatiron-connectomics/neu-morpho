@@ -29,10 +29,19 @@ from collections import Counter
 # The two-stage ops key their manifest groups by pipeline phase. Stage 1 is per
 # BLOCK, stage 2 per BODY, so their totals are not comparable and are reported
 # separately — a combined percentage would be meaningless.
+#
+# The per-BODY groups have no count in run_plan.json — the body set is not known
+# until stage 1 has run. It is knowable afterwards, though: stage 1 writes one
+# directory per body under the fragment store, so that count is exactly how many
+# bodies stage 2 has to fuse (verified: 19,989 dirs == 19,989 num_bodies_fused).
+# The 4th field names the store to count, and is only trusted once stage 1 is
+# COMPLETE — while stage 1 is still running the store keeps growing, so using it
+# early would divide by a moving target and flatter the progress bar.
 STAGE_GROUPS = {
-    "seg":  [("seg-*", "block", "seg")],
-    "mesh": [("chunk", "block", "mesh"), ("assemble", "body", None)],
-    "skel": [("skel-chunk", "block", "skel"), ("skel-fuse", "body", None)],
+    "seg":  [("seg-*", "block", "seg", None)],
+    "mesh": [("chunk", "block", "mesh", None), ("assemble", "body", None, "chunked")],
+    "skel": [("skel-chunk", "block", "skel", None),
+             ("skel-fuse", "body", None, "skel_chunked")],
 }
 # Statuses that mean the task is finished and will not be retried. "failed" is
 # deliberately excluded: em-blockrun's is_done tests key presence, so a resumed run
@@ -75,6 +84,18 @@ def _bar(done: int, total: int | None, width: int = 24) -> str:
     frac = min(1.0, done / total)
     filled = int(frac * width)
     return f"[{'#' * filled}{'.' * (width - filled)}] {100 * frac:5.1f}%"
+
+
+def _store_bodies(path: str) -> int | None:
+    """How many bodies stage 1 produced fragments for — stage 2's denominator.
+
+    One directory per body (``fragments.body_dir``), so a single top-level listing
+    answers it. Do NOT walk into them: that is a millions-of-inodes traversal.
+    """
+    try:
+        return len(os.listdir(path))
+    except OSError:
+        return None
 
 
 def _fragment_stores(work: str) -> list[tuple[str, int, int]]:
@@ -121,13 +142,22 @@ def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
         if not counts:
             continue
         print(f"\n{stage}")
-        for group_pattern, unit, plan_key in groups:
+        # Stage 1 of this stage, for gating the per-body denominator below.
+        stage1 = groups[0]
+        s1 = _match(counts, stage1[0])
+        s1_done = sum(n for s, n in s1.items() if s in DONE)
+        s1_total = seg_total if stage == "seg" else planned.get(stage1[2])
+        s1_complete = bool(s1_total) and s1_done >= s1_total
+
+        for group_pattern, unit, plan_key, store in groups:
             g = _match(counts, group_pattern)
             if not g:
                 continue
             done = sum(n for s, n in g.items() if s in DONE)
             failed = g.get("failed", 0)
             total = (seg_total if stage == "seg" else planned.get(plan_key)) if plan_key else None
+            if total is None and store and s1_complete:
+                total = _store_bodies(os.path.join(work, store))
             label = f"{group_pattern:11s} {unit:5s}"
             detail = "  ".join(f"{s}={n}" for s, n in sorted(g.items()))
             print(f"  {label} {done:>7}/{total if total else '?':>7}  "
@@ -205,7 +235,7 @@ def main() -> None:
     if os.path.exists(run_summary):
         with open(run_summary) as f:
             s = json.load(f)
-        print(f"\nrun_summary.json present — the driver finished. "
+        print(f"\nrun_summary.json present — the run finished. "
               f"timing(min)={s.get('timing_min')}  failed_bodies={s.get('n_failed_bodies')}")
 
     if args.sample:
