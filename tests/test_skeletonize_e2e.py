@@ -79,13 +79,47 @@ def test_skeletonize_end_to_end(tmp_path):
     assert 300 <= bz.min() and bz.max() <= 400  # block 1: z voxels 40..48 -> 320..376 nm
 
 
+def test_tick_removal_runs_after_the_seam_join(tmp_path):
+    """Order invariant: postprocess must join fragments BEFORE dropping short branches.
+
+    ``fix_borders`` makes a fragment reach the seam via a short mandatory spur off its
+    trunk whenever the trunk's own endpoint is elsewhere. That spur is exactly what a
+    tick filter targets — so if tick removal ever ran first, it would amputate the
+    reaching branches and the body would fuse into disconnected block-length stubs
+    while every status still read "written". Nothing else here would notice: the
+    default ``postprocess_tick_nm`` is 500 nm and ``_cfg`` turns it off.
+    """
+    cfg = replace(_cfg(), postprocess_tick_nm=500.0)
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
+    summary = skeletonize_segments(src, out, cfg, db_path=None, client=None)
+
+    rod = _load(summary["out_dir"], 7)
+    assert len(rod.components()) == 1, "tick removal broke the seam"
+    z = rod.vertices[:, 2]
+    assert z.min() <= 8 and z.max() >= 744      # still spans all three blocks
+
+
 def test_metrics_land_in_db(tmp_path):
+    """Topology of the fused rod reaches the DB — with tick removal ON.
+
+    ``_cfg`` disables postprocessing so the other tests can see raw geometry, but an
+    "unbranched rod" claim only survives that for a tracer whose main path happens to
+    end exactly on the face centre. ``fix_borders`` makes the centre of each contact
+    area a *mandatory* target, so when the natural TEASAR extremum is elsewhere — for
+    a square cross-section it is the corner, maximally far — the fragment carries a
+    1-voxel spur from its trunk out to the seam point. That is the mechanism working,
+    not failing: the seam join runs BEFORE tick removal, so the spur does its job and
+    is then cleaned up. Production removes 94k of them over a 30-block ROI, 3.2% of
+    cable. Assert against that order, not against postprocessing being off.
+    """
     from em_seg_morpho.metrics_db import MetricsDB
 
+    cfg = replace(_cfg(), postprocess_tick_nm=500.0)
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
     db_path = str(tmp_path / "metrics.db")
-    skeletonize_segments(src, out, _cfg(), db_path=db_path, client=None)
+    skeletonize_segments(src, out, cfg, db_path=db_path, client=None)
 
     db = MetricsDB(db_path)
     row = db.con.execute(
@@ -169,7 +203,14 @@ def test_default_join_does_not_bridge_a_segmentation_split():
 
     unbounded = fuse_body(frags, replace(cfg, join_radius_nm=float("inf")), body_id=7)
     assert len(unbounded.components()) == 1
-    assert unbounded.cable_length() > 1.5 * bounded_cable   # the invented edge
+
+    # An unbounded join adds ONE straight edge between the nearest vertex pair, so
+    # the cable it invents is exactly that pair's separation. Measure the gap from
+    # the unjoined skeleton rather than asserting a remembered ratio.
+    comps = fused.components()
+    ca, cb = (np.asarray(c.vertices, float) for c in comps)
+    gap = float(np.linalg.norm(ca[:, None, :] - cb[None, :, :], axis=-1).min())
+    assert unbounded.cable_length() == pytest.approx(bounded_cable + gap, rel=0.05)
 
 
 def test_join_radius_zero_defers_to_postprocess():
@@ -361,3 +402,50 @@ def test_dust_threshold_deletion_is_reported_not_silent(tmp_path):
     out2 = OutputConfig(dst=str(tmp_path / "out2" / "segmentation"), work_dir=str(tmp_path / "out2"))
     s2 = skeletonize_segments(src, out2, _cfg(), client=None)
     assert s2["status_counts"].get("written") == 1
+
+
+# --------------------------------------------------------------------------- #
+# The neutu tracer through the same pipeline
+# --------------------------------------------------------------------------- #
+def test_neutu_tracer_end_to_end_welds_a_spanning_body(tmp_path):
+    """The whole point of fix_borders, checked through the real two-stage op.
+
+    A body spanning three blocks must come back as ONE component covering the full
+    extent. If neutu fragments do not meet at the seams, stage 2's narrow join
+    cannot weld them and this arrives as three stubs.
+
+    min_length is left at its default so the test exercises the interaction that
+    matters: border targets are mandatory and exempt, so a fragment reaches each
+    face even when its cable inside that block is short.
+    """
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
+                       work_dir=str(tmp_path / "out"))
+    cfg = replace(_cfg(), tracer="neutu")
+
+    summary = skeletonize_segments(src, out, cfg, db_path=None, client=None)
+    out_dir = summary["out_dir"]
+    assert summary["num_blocks"] == 3
+    assert summary["status_counts"].get("written") == 2
+    assert len(os.listdir(os.path.join(summary["chunked_dir"], "7"))) == 3
+
+    rod = _load(out_dir, 7)
+    assert len(rod.components()) == 1, (
+        f"neutu fragments did not weld: {len(rod.components())} components")
+    z = rod.vertices[:, 2]
+    assert z.min() <= 16 and z.max() >= 736, f"z extent {z.min()}..{z.max()}"
+    assert rod.cable_length() > 700
+
+
+def test_neutu_tracer_radii_are_nm_through_the_pipeline(tmp_path):
+    """Units survive stage 1 -> fragment store -> stage 2 -> precomputed."""
+    src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
+    out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
+                       work_dir=str(tmp_path / "out"))
+    summary = skeletonize_segments(src, out, replace(_cfg(), tracer="neutu"),
+                                   db_path=None, client=None)
+    rod = _load(summary["out_dir"], 7)
+    r = np.asarray(rod.radius, float)
+    # the rod is 4 voxels across at 8 nm/voxel, so radii are ~8-16 nm, never ~1-2
+    assert r.max() >= 6.0, f"radii look like voxels, max {r.max():.2f}"
+    assert r.max() <= 8.0 * 6

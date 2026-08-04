@@ -120,6 +120,12 @@ def scale_spec(spec: str | Mapping[str, Any], scale_index: int) -> dict:
 
     precomputed selects the level with ``scale_index``; zarr addresses the level's
     subgroup by path, so the two need different treatment.
+
+    **Always go through this rather than hand-writing a spec.** The key is
+    ``scale_index``, and an unrecognised one is *silently ignored*: a spec carrying
+    ``{"scale": 2}`` opens at full resolution and reports the scale-0 shape, so the
+    coordinates you pass are then interpreted 4x too fine and read the wrong place
+    entirely. That fails as empty data, not as an error.
     """
     from em_volume_tools.introspect import detect_backend
     from em_volume_tools.location import join

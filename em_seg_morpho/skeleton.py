@@ -33,18 +33,6 @@ def _teasar_params(cfg: SkeletonConfig) -> dict:
             "pdrf_scale": cfg.pdrf_scale, "pdrf_exponent": cfg.pdrf_exponent}
 
 
-def _clean_mask(mask_zyx: np.ndarray, cfg: SkeletonConfig) -> np.ndarray:
-    """Optional small morphological cleanup before kimimaro (see SkeletonConfig)."""
-    import scipy.ndimage as ndi
-
-    b = mask_zyx.astype(bool)
-    if cfg.mask_opening_iters:
-        b = ndi.binary_opening(b, iterations=cfg.mask_opening_iters)
-    if cfg.mask_closing_iters:
-        b = ndi.binary_closing(b, iterations=cfg.mask_closing_iters)
-    return b
-
-
 # --------------------------------------------------------------------------- #
 # Stage 1: one block
 # --------------------------------------------------------------------------- #
@@ -68,20 +56,19 @@ def skeletonize_block(seg_block_zyx: np.ndarray, block_origin_vox_zyx: Sequence[
         return {}
 
     labels = seg_block_zyx
-    if cfg.mask_opening_iters or cfg.mask_closing_iters:
-        # Per-label cleanup: morphology is a binary op, so there is no way around
-        # one pass per body. Closing can make labels overlap; last one wins.
-        cleaned = np.zeros_like(labels)
-        for lab in present:
-            cleaned[_clean_mask(labels == lab, cfg)] = lab
-        labels = cleaned
-
-    skels = kimimaro.skeletonize(
-        labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,
-        object_ids=[int(v) for v in present], dust_threshold=cfg.dust_threshold,
-        fix_borders=cfg.fix_borders, progress=False,
-    )
     origin_nm = crop_origin_nm(block_origin_vox_zyx, cfg.anisotropy)   # anisotropy = skel voxel size
+
+    if cfg.tracer == "neutu":
+        skels = _skeletonize_block_neutu(labels, present, cfg)
+    elif cfg.tracer == "kimimaro":
+        skels = kimimaro.skeletonize(
+            labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,
+            object_ids=[int(v) for v in present], dust_threshold=cfg.dust_threshold,
+            fix_borders=cfg.fix_borders, progress=False,
+        )
+    else:
+        raise ValueError(f"unknown tracer {cfg.tracer!r}; expected 'kimimaro' or 'neutu'")
+
     out: dict[int, object] = {}
     for body_id, skel in skels.items():
         if len(skel.vertices) == 0:
@@ -89,6 +76,111 @@ def skeletonize_block(seg_block_zyx: np.ndarray, block_origin_vox_zyx: Sequence[
         skel.vertices = skeleton_to_physical(skel.vertices, origin_nm).astype(np.float32)
         skel.id = int(body_id)
         out[int(body_id)] = skel
+    return out
+
+
+def _label_boxes(labels):
+    """Per-label bounding box and voxel count, in **one pass** over the block.
+
+    Doing this per label costs a full-array scan each time, and a 256^3 block holds
+    ~1000 allowlisted labels — measured at 561 s for the block versus 72 s when each
+    label is cropped to its own extent first.
+    """
+    idx = np.argwhere(labels != 0)
+    if not len(idx):
+        return {}
+    vals = labels[idx[:, 0], idx[:, 1], idx[:, 2]]
+    order = np.argsort(vals, kind="stable")
+    vals = vals[order]
+    idx = idx[order]
+    bounds = np.flatnonzero(np.diff(vals)) + 1
+    out = {}
+    for part, lab in zip(np.split(idx, bounds), vals[np.concatenate(([0], bounds))]):
+        out[int(lab)] = (part.min(0), part.max(0) + 1, len(part))
+    return out
+
+
+def _skeletonize_block_neutu(labels, present, cfg: SkeletonConfig) -> dict[int, object]:
+    """Trace each label in a block with ``neutu_trace``. Vertices/radii in **nm**.
+
+    Unlike ``kimimaro.skeletonize``, which batches every ``object_ids`` entry in one
+    call, ``neutu_trace.skeletonize`` takes a single binary mask — so this loops. Two
+    things are hoisted out of that loop because they are full-block passes and the
+    block holds ~1000 labels (measured: 561 s per block naively, 72 s cropped):
+
+    - **bounding boxes**, so each trace sees only the label's own extent;
+    - **face-contact targets**, computed once over the raw label array. They must be
+      found on the BLOCK's faces, not the crop's — cropping moves the faces, and
+      adjacent blocks would stop agreeing on the seam point.
+
+    **The unit conversion is load-bearing.** kimimaro is handed
+    ``anisotropy=voxel_size`` and returns nm, so the caller only adds the crop origin.
+    ``neutu_trace`` works in *voxels* by design (its cost is not scale-invariant), so
+    both vertices **and radii** must be scaled here. Missing the radii would publish
+    values 32x too small at scale 2 and pass every geometric test, since positions
+    would still be right.
+    """
+    from . import neutu_trace, swc_simplify
+
+    vs = np.asarray(cfg.anisotropy, dtype=float)
+    if not np.allclose(vs, vs[0]):
+        raise ValueError(
+            f"tracer='neutu' requires isotropic voxels, got anisotropy={cfg.anisotropy}. "
+            "Its 1/(1+r^2) cost is not scale-invariant and NeuTu's own EDT is not "
+            "anisotropy-aware, so there is no faithful anisotropic form to use.")
+
+    boxes = _label_boxes(labels)
+    face_pts = {}
+    if cfg.fix_borders:
+        # compute_border_targets remaps through get_mapping, so passing the raw body
+        # ids (not cc labels) returns targets keyed by body id in one pass
+        face_pts = neutu_trace.border_targets(np.ascontiguousarray(labels))
+
+    wanted = {int(v) for v in present}
+    out: dict[int, object] = {}
+    for body_id in wanted:
+        box = boxes.get(body_id)
+        if box is None:
+            continue
+        lo, hi, count = box
+        if count < cfg.dust_threshold:
+            continue
+        lo = np.maximum(0, lo - 1)
+        hi = np.minimum(np.asarray(labels.shape), hi + 1)
+        sub = np.ascontiguousarray(
+            labels[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]] == body_id)
+        ft = face_pts.get(body_id)
+        ft = (np.asarray(ft, np.int64) - lo) if ft is not None and len(ft) else None
+        skel = neutu_trace.skeletonize(
+            sub, scale=cfg.neutu_scale, const=cfg.neutu_const_vox,
+            min_length=cfg.neutu_min_length_vox, cost=cfg.neutu_cost,
+            edge_max_gb=cfg.neutu_edge_max_gb,
+            face_targets=ft if ft is not None else np.zeros((0, 3), np.int64),
+            dust_threshold=cfg.dust_threshold)
+        v = np.asarray(skel.vertices, dtype=float)
+        if not len(v):
+            continue
+        r = np.asarray(skel.radii, dtype=float)
+        e = np.asarray(skel.edges, dtype=int)
+        if cfg.neutu_simplify:
+            v, r, e = swc_simplify.simplify(v, r, e)
+            if not len(v):
+                continue
+        # Build a FRESH skeleton rather than mutating the one neutu_trace returned.
+        # osteoid carries attribute arrays beyond vertices/radii/edges — vertex_types
+        # among them — sized to the original vertex count. Reassigning vertices after
+        # swc_simplify shrinks them leaves those stale, and to_precomputed then
+        # refuses the fragment ("Number of uint8 vertex_types (34) must match the
+        # number of vertices (16)"). Unit tests on vertices/radii/edges cannot see it;
+        # the end-to-end op can.
+        from osteoid import Skeleton
+
+        v = v + lo                                            # crop -> block voxels
+        fresh = Skeleton(vertices=(v * vs).astype(np.float32),
+                         edges=np.asarray(e, dtype=np.uint32).reshape(-1, 2),
+                         segid=body_id)
+        fresh.radii = (r * float(vs[0])).astype(np.float32)    # voxels -> nm
+        out[body_id] = fresh
     return out
 
 
@@ -288,8 +380,6 @@ def skeletonize_body(mask_zyx: np.ndarray, body_id: int, crop_origin_vox_zyx, cf
     """
     import kimimaro
 
-    if cfg.mask_opening_iters or cfg.mask_closing_iters:
-        mask_zyx = _clean_mask(mask_zyx, cfg)
     labels = mask_zyx.astype(np.uint64) * np.uint64(body_id)
     skels = kimimaro.skeletonize(
         labels, teasar_params=_teasar_params(cfg), anisotropy=cfg.anisotropy,
