@@ -108,15 +108,15 @@ def _parse_args(argv=None):
     p.add_argument("--tracer", default="neutu", choices=("kimimaro", "neutu"),
                    help="stage-1 skeletonizer (default neutu). 'neutu' is "
                         "em_seg_morpho.neutu_trace, which reproduces NeuTu's skeletons "
-                        "at ~2.6x fewer vertices but ~1.7x the per-block time, and "
-                        "requires isotropic voxels; 'kimimaro' is the older tracer "
-                        "(see docs/skeletonization-plan.md)")
+                        "with fewer vertices and requires isotropic voxels; 'kimimaro' "
+                        "is the older tracer, and the one to use on an anisotropic "
+                        "pyramid (see docs/skeletonization-plan.md)")
     p.add_argument("--neutu-cost", default="edge", choices=("voxel", "edge"),
                    help="--tracer neutu only (default edge). 'edge' is NeuTu's own "
-                        "symmetric cost and matches it more closely; measured in block "
-                        "mode it costs 3%% memory and 5%% time over 'voxel'. 'voxel' "
-                        "is O(voxels) and useful if a component ever exceeds "
-                        "SkeletonConfig.neutu_edge_max_gb")
+                        "symmetric cost and matches it more closely. 'voxel' is "
+                        "cheaper in memory, which matters only if a component exceeds "
+                        "SkeletonConfig.neutu_edge_max_gb (see "
+                        "docs/skeletonization-plan.md)")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,

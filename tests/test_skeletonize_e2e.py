@@ -203,7 +203,14 @@ def test_default_join_does_not_bridge_a_segmentation_split():
 
     unbounded = fuse_body(frags, replace(cfg, join_radius_nm=float("inf")), body_id=7)
     assert len(unbounded.components()) == 1
-    assert unbounded.cable_length() > 1.5 * bounded_cable   # the invented edge
+
+    # An unbounded join adds ONE straight edge between the nearest vertex pair, so
+    # the cable it invents is exactly that pair's separation. Measure the gap from
+    # the unjoined skeleton rather than asserting a remembered ratio.
+    comps = fused.components()
+    ca, cb = (np.asarray(c.vertices, float) for c in comps)
+    gap = float(np.linalg.norm(ca[:, None, :] - cb[None, :, :], axis=-1).min())
+    assert unbounded.cable_length() == pytest.approx(bounded_cable + gap, rel=0.05)
 
 
 def test_join_radius_zero_defers_to_postprocess():

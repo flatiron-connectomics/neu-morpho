@@ -22,16 +22,24 @@ def _line(n=40, axis=0, offset=(0, 0, 0), r=2.0):
     return v, np.full(n, r), e
 
 
+# The side branch runs perpendicular to the trunk, so a point on it is exactly its
+# own y-coordinate away from the trunk. Bounds below are derived from this, rather
+# than from what the metric happened to return.
+BRANCH_LEN = 12
+
+
 def _with_extra_branch(n=40):
     """A trunk plus a side branch that the reference does not have."""
     v, r, e = _line(n)
-    br = np.stack([np.full(12, 20.0), np.arange(1, 13, dtype=float),
-                   np.zeros(12)], axis=1)
+    br = np.stack([np.full(BRANCH_LEN, 20.0),
+                   np.arange(1, BRANCH_LEN + 1, dtype=float),
+                   np.zeros(BRANCH_LEN)], axis=1)
     off = len(v)
     v = np.vstack([v, br])
-    r = np.concatenate([r, np.full(12, 1.0)])
-    e = np.vstack([e, [[20, off]], np.stack([np.arange(off, off + 11),
-                                             np.arange(off + 1, off + 12)], axis=1)])
+    r = np.concatenate([r, np.full(BRANCH_LEN, 1.0)])
+    e = np.vstack([e, [[20, off]],
+                   np.stack([np.arange(off, off + BRANCH_LEN - 1),
+                             np.arange(off + 1, off + BRANCH_LEN)], axis=1)])
     return v, r, e
 
 
@@ -64,9 +72,12 @@ def test_node_placement_alone_does_not_count_as_disagreement():
     v2 = v2.copy()
     v2[:, 0] = np.linspace(0, 39, 9)                    # same path, 9 nodes
     a = skelmetrics.agreement(v2, r2, e2, v, r, e)
-    assert a["a_to_b_median"] < 0.6
-    assert a["b_to_a_median"] < 0.6
-    assert a["node_ratio"] < 0.3                        # but the ratio still shows it
+    # Sub-voxel: a voxel is the resolution of the underlying data, so anything
+    # under it is "the same path", and there is no meaning in a tighter number.
+    assert a["a_to_b_median"] < 1.0
+    assert a["b_to_a_median"] < 1.0
+    # ...while the node ratio is exactly the sampling ratio it was built with.
+    assert a["node_ratio"] == pytest.approx(9 / 40)
 
 
 def test_invented_branch_shows_in_a_to_b_not_b_to_a():
@@ -74,8 +85,11 @@ def test_invented_branch_shows_in_a_to_b_not_b_to_a():
     va, ra, ea = _with_extra_branch()
     vb, rb, eb = _line()
     a = skelmetrics.agreement(va, ra, ea, vb, rb, eb)
-    assert a["b_to_a_p90"] < 1.0, "reference is still covered"
-    assert a["a_to_b_p90"] > 3.0, "the invented branch should show up"
+    assert a["b_to_a_p90"] < 1.0, "reference is still covered, to within a voxel"
+    # A's far points ARE the branch, so the distance it registers is bounded by the
+    # branch's own length and must be more than sub-voxel to count as detected.
+    assert 1.0 < a["a_to_b_p90"] <= BRANCH_LEN
+    assert a["a_to_b_p90"] > a["b_to_a_p90"], "the metric must be directional"
     assert a["tip_ratio"] > 1.0
 
 
@@ -85,7 +99,8 @@ def test_missing_branch_shows_in_b_to_a_not_a_to_b():
     vb, rb, eb = _with_extra_branch()
     a = skelmetrics.agreement(va, ra, ea, vb, rb, eb)
     assert a["a_to_b_p90"] < 1.0
-    assert a["b_to_a_p90"] > 3.0, "the missing branch should show up"
+    assert 1.0 < a["b_to_a_p90"] <= BRANCH_LEN, "the missing branch should show up"
+    assert a["b_to_a_p90"] > a["a_to_b_p90"], "the metric must be directional"
 
 
 def test_radius_ratio_tracks_radius():

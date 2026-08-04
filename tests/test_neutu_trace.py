@@ -296,21 +296,27 @@ def test_root_seeds_from_the_thickest_voxel_not_memory_order():
     """
     import edt
 
+    thin_z0, thin_z1, blob_z, blob_r = 2, 40, 48, 8
     m = np.zeros((60, 30, 30), dtype=np.uint8)
     zz, yy, xx = np.indices(m.shape)
-    m[(zz >= 2) & (zz < 40) & ((yy - 15) ** 2 + (xx - 15) ** 2 <= 4)] = 1   # thin, first
-    m[((zz - 48) ** 2 + (yy - 15) ** 2 + (xx - 15) ** 2) <= 64] = 1        # thick, later
+    m[(zz >= thin_z0) & (zz < thin_z1)
+      & ((yy - 15) ** 2 + (xx - 15) ** 2 <= 4)] = 1                        # thin, first
+    m[((zz - blob_z) ** 2 + (yy - 15) ** 2 + (xx - 15) ** 2)
+      <= blob_r ** 2] = 1                                                  # thick, later
     m = np.asfortranarray(m)
     dbf = edt.edt(m, anisotropy=(1, 1, 1), black_border=False, order="F")
 
+    # the sphere's centre is its deepest point, by construction
     thickest = np.unravel_index(int(np.argmax(dbf)), dbf.shape)
-    assert thickest[0] > 40, "test body is not built as intended"
+    assert thickest[0] == blob_z, "test body is not built as intended"
 
     from_thick = neutu_trace._find_root(m, dbf)
     from_order = neutu_trace._find_root(m, None)
     assert from_thick is not None and from_order is not None
-    # seeding at the thick blob puts the root at the far (thin) end
-    assert from_thick[0] < 20
+    # TEASAR's root is the farthest voxel from the seed, so seeding in the blob puts
+    # it at the thin cylinder's far tip — a position the fixture fixes, not one
+    # read off a previous run.
+    assert from_thick[0] == thin_z0
 
 
 def test_find_root_ignores_zero2inf_background():
@@ -375,8 +381,11 @@ def test_path_mask_radius_is_capped():
     assert pm[15, 12, 12]
 
 
-@pytest.mark.parametrize("bend,limit", [(False, 0.5), (True, 3.0)])
-def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
+TUBE_RADIUS = 4          # the fixture's radius; bounds below are derived from it
+
+
+@pytest.mark.parametrize("bend", [False, True])
+def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend):
     """The property block-first fusion depends on.
 
     Stage 2 welds fragments with a join bounded to seam scale, because widening it
@@ -384,28 +393,27 @@ def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
     the shared face. Cut a tube in two, skeletonize each half independently, and
     compare where each fragment meets the cut.
 
-    **Adjacent blocks do not share a plane** — block A ends at z=k, block B starts at
-    z=k+1 — so on curved structure the two contact-area centres genuinely differ, and
-    the offset is bounded by how far the cross-section shifts in one voxel, not by
-    zero. The bent residual EXCEEDS the auto join radius (2 voxels), so
-    `join_radius_nm` may need raising for curved processes -- see
-    docs/skeletonization-plan.md.
+    Every bound here is derived, not observed:
 
-    | case | cost | no fix_borders | with |
-    |---|---|---:|---:|
-    | straight | voxel | 5.10 | **0.00** |
-    | straight | edge  | 2.00 | **0.00** |
-    | bent | voxel | 4.12 | **2.83** |
-    | bent | edge  | 3.16 | **2.83** |
+    - **Each endpoint lies on its block's face**, within one voxel — that is what
+      ``fix_borders`` promises, and a vertex is voxel-quantized.
+    - **A straight tube must give exactly zero offset.** Both faces expose an
+      identical disc, so the contact-area centre is the same point; anything nonzero
+      means the target is not a function of the contact area alone.
+    - **A bent tube must still land inside the tube**, so the two endpoints cannot be
+      further apart than the cross-section they both sit in, ``2 * r``. Adjacent
+      blocks do not share a plane — block A ends at z=k, block B starts at z=k+1 — so
+      the two discs differ and the residual is genuinely nonzero. Its exact value is
+      set by how ``compute_border_targets`` breaks ties between equally-deep voxels,
+      which is not a property worth pinning to a number.
+    - **``fix_borders`` never makes the seam worse** than not using it.
 
-    **The with-fix column does not depend on the cost**, which is the point: the
-    border target is a property of the face contact area, not of how paths are
-    priced. Only the unfixed baseline improves under 'edge', because it routes nearer
-    the centreline unaided. So this asserts fix_borders is never *worse* rather than
-    better by some margin — an earlier version required a >0.5 voxel gain and started
-    failing when the baseline improved, which measured the baseline, not the property.
+    The measured values, and what they mean for ``join_radius_nm`` on curved
+    processes, are in docs/skeletonization-plan.md — not asserted here, so that a
+    routing improvement shows up there rather than as a test failure.
     """
-    m = _tube(length=60, r=4, pad=4, bend=bend)
+    r = TUBE_RADIUS
+    m = _tube(length=60, r=r, pad=4, bend=bend)
     cut = m.shape[0] // 2
     left = np.asfortranarray(m[:cut].copy())
     right = np.asfortranarray(m[cut:].copy())
@@ -426,7 +434,11 @@ def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
     rp0, _ = endpoint(right, 0, False)
     off_no = float(np.linalg.norm(lp0[1:] - rp0[1:]))
 
-    assert off_fix <= limit, f"seam offset {off_fix:.2f} exceeds {limit}"
+    if not bend:
+        assert off_fix == 0.0, (
+            f"identical contact discs must give the same target, got {off_fix:.2f}")
+    assert off_fix <= 2 * r, (
+        f"seam offset {off_fix:.2f} exceeds the tube cross-section {2 * r}")
     assert off_fix <= off_no, (
         f"fix_borders made the seam worse: {off_no:.2f} -> {off_fix:.2f}")
 
