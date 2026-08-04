@@ -32,8 +32,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Imported lazily by em_seg_morpho/skelcompare.py only; the meshing and
-# skeletonization pipelines do not need them.
+# Viewing published output: scripts/view_body_3d.py. em_seg_morpho.readback, which
+# does the actual reading, needs nothing beyond the core deps — only the rendering
+# is optional.
+viz = ["plotly"]  # self-contained interactive 3D HTML
+# The comparison harness (em_seg_morpho/skelcompare.py, scripts/compare_skeletons*).
+# plotly is repeated rather than pulled in via a self-referential `em-seg-morpho[viz]`
+# extra: the two groups are installed independently and this project installs with
+# `pip install --no-deps`, so nothing resolves extras here anyway. Keep the two
+# entries in step if either is ever version-pinned.
 compare = [
     "networkx",
     "plotly",   # interactive 3D skeleton comparison (self-contained HTML)

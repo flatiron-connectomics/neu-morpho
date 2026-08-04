@@ -310,11 +310,27 @@ the work dir defaults to its parent, which reproduces the layout from when `--ds
 meant the run root.
 
 To inspect what was actually published, `scripts/view_body_3d.py --volume <dst> <ids>`
-reads a body's mesh and skeleton back **out of the volume** — local or `s3://` — and
 writes one self-contained interactive HTML per body: the mesh as a translucent
 surface, the skeleton as conical frusta whose end radii are the stored per-vertex
 radii, each toggleable from the legend. Reading the published artefact rather than an
 intermediate is the point; it is the only check that covers the encode step.
+
+The reading and geometry are in **`em_seg_morpho/readback.py`** — `read_body_skeleton`,
+`read_body_mesh`, `frustum_mesh` — the inverse of `precomputed.py`, which only writes.
+It lives there rather than in `precomputed.py` because that module is forbidden from
+importing `os` or calling `open()` (the guard that keeps s3 destinations from silently
+writing nowhere), while reading a multires mesh must stage objects to a temp directory
+for `vol2mesh.multires.read_object_mesh` to parse. Keeping it separate confines the
+filesystem access to a module that never writes to `dst`, and avoids this package
+owning a copy of the multires manifest parser. `readback.py` needs no optional
+dependency; only the plotly rendering in the script does (`.[viz]`).
+
+Having a reader is what makes **round-trip tests** possible — encode with
+`precomputed.write_*`, decode with `readback.read_*`, compare — which is the only
+check that a wrong-but-self-consistent encoding cannot pass. One already earned its
+keep: osteoid returns a `-1` sentinel radius per vertex when the skeleton `info`
+declares no radius attribute, which is finite and the right length, so a length-only
+guard let it through to render as an inverted tube.
 
 ### What the split costs, and the guard that pays for it
 
