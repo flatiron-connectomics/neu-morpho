@@ -31,6 +31,9 @@ dependencies = [
     "em-blockrun",     # dask/SLURM chunked-map substrate
 ]
 
+[project.scripts]
+em-seg-morpho = "em_seg_morpho.cli:main"
+
 [project.optional-dependencies]
 # Viewing published output: scripts/view_body_3d.py. em_seg_morpho.readback, which
 # does the actual reading, needs nothing beyond the core deps — only the rendering
@@ -50,6 +53,11 @@ dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["em_seg_morpho"]
+# em_seg_morpho/configs/*.yaml are package DATA and ship automatically, because
+# hatchling includes every tracked file under `packages`. The console script needs
+# them: `--config dask-local` resolves through importlib.resources. Keep them TRACKED
+# — the repo-root `configs/` is gitignored for site-specific files, and an unanchored
+# ignore pattern would silently exclude these too (see .gitignore).
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

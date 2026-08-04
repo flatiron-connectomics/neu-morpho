@@ -795,7 +795,7 @@ closures; verify each hit by grep before cutting.
   space the cheapest thing to cross.
 - **`anisotropy=(8,8,8)` in `SkeletonConfig` is a placeholder.** Scale 2 is
   32 nm/voxel. `const` is in nm; get the conversion right before comparing settings.
-  (The driver overrides it from the source metadata — the published radii are
+  (The CLI overrides it from the source metadata — the published radii are
   correct — but the default on its own would be wrong by 4×.)
 - **NeuTu's EDT is not anisotropy-aware** (anisotropy enters only via Dijkstra step
   lengths). Fine for isotropic data; a real problem otherwise.

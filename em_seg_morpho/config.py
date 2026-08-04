@@ -161,10 +161,10 @@ class OutputConfig:
     inside the output, so ``rm -rf`` took the record and the data together and
     the next run correctly started over. Now a manifest can outlive the data it
     describes, and a resumed run would skip every task and report success having
-    written nothing. The driver guards this by refusing to resume when a manifest
+    written nothing. The CLI guards this by refusing to resume when a manifest
     claims completed work but ``dst`` has no ``info`` — see
-    ``examples/run_morpho_slurm.py``. Anything writing to ``dst`` outside that
-    driver has to make the same check.
+    ``em_seg_morpho/cli.py``. Anything writing to ``dst`` outside that entry point
+    has to make the same check.
     """
 
     dst: str = ""            # the precomputed VOLUME root: local path or s3:// URL

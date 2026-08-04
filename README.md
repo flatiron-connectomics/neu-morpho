@@ -35,27 +35,43 @@ up, at `em-libraries/environment.yml`. Skeleton *comparison* tooling
 
 ## Running it
 
-One driver, `examples/run_morpho_slurm.py`, runs the stages against a dask
-cluster (local or SLURM, chosen by the YAML config). Every stage is idempotent,
-so re-running the same command resumes.
+Installing the package provides the **`em-seg-morpho`** command (equivalently
+`python -m em_seg_morpho`). It runs the stages against a dask cluster — local or
+SLURM, chosen by the YAML config. Every stage is idempotent, so re-running the same
+command resumes.
 
 ```bash
 # 0. look at the pyramid and pick scales from real metadata (no cluster, no writes)
-python examples/run_morpho_slurm.py --src /mnt/ceph/.../seg --describe
+em-seg-morpho --src /path/to/seg --describe
 
 # 1. one small cube, in-process — the fastest way to see it work end to end
-python examples/run_morpho_slurm.py --src ... \
-    --dst /mnt/ceph/.../morpho/segmentation --work-dir /mnt/ceph/.../morpho \
-    --serial --roi 0,0,0,512,2048,2048 --stages index,mesh,skel
+em-seg-morpho --src ... \
+    --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \
+    --serial --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
 # 2. the same cube on SLURM, surviving logout, publishing to s3
-nohup python -u examples/run_morpho_slurm.py --src ... \
-    --dst s3://bucket/sample3/segmentation --work-dir /mnt/ceph/.../morpho \
-    --config configs/dask-slurm-any.yaml --workers 48 \
-    --roi 0,0,0,512,2048,2048 --stages index,mesh,skel > run.log 2>&1 &
+nohup em-seg-morpho --src ... \
+    --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \
+    --config /path/to/my-slurm.yaml --workers 48 \
+    --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
 squeue -u "$USER"
 
 # 3. widen or drop --roi for the whole volume; step 2's work is reused
+```
+
+`--roi-scale` is **required** whenever `--roi` is given: the same six numbers name a
+box four times smaller per pyramid level, and the wrong one silently processes the
+wrong region instead of failing.
+
+### Cluster config
+
+`--config` takes either a path to your own YAML or the name of one bundled with the
+package — `dask-local` (used by default) and `dask-slurm-example`. **The SLURM one is
+an example**: copy it and set your account, partition, sizing and log directory.
+Site-specific configs and dataset allowlists are deliberately not in this repo.
+
+```bash
+python -c "from em_seg_morpho.cli import resolve_config; print(resolve_config('dask-slurm-example'))"
 ```
 
 ### Two destinations: `--dst` and `--work-dir`

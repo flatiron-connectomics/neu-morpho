@@ -1,6 +1,8 @@
 """Stage-1 tracer selection: units, parity of shape, and the isotropy guard."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 
@@ -40,14 +42,14 @@ def test_edge_memory_guard_raises_instead_of_oom():
 
 
 def _driver():
-    import importlib.util
-    import pathlib
+    """The CLI is package code now, so it imports like anything else.
 
-    path = pathlib.Path(__file__).resolve().parents[1] / "examples" / "run_morpho_slurm.py"
-    spec = importlib.util.spec_from_file_location("_driver_for_test", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    It used to be loaded from examples/ by path, which is what made it the one part
+    of the shipped pipeline the test suite could not reach normally.
+    """
+    from em_seg_morpho import cli
+
+    return cli
 
 
 BASE_ARGV = ["--src", "x", "--dst", "y", "--work-dir", "z"]
@@ -178,3 +180,52 @@ def test_neutu_cost_is_validated_not_silently_ignored():
     with pytest.raises(ValueError, match="voxel|edge"):
         skeleton.skeletonize_block(m, (0, 0, 0), _cfg(tracer="neutu",
                                                       neutu_cost="nonsense"))
+
+
+def test_bundled_configs_are_findable_and_resolve():
+    """The console script is useless if its configs did not ship.
+
+    --config used to default to the repo-relative 'configs/dask-local.yaml', which
+    only resolved with the cwd set to a source checkout. These assert the package
+    can find its own data, which is what an installed command depends on.
+    """
+    cli = _driver()
+    names = cli.bundled_configs()
+    assert "dask-local" in names, f"bundled configs missing: {names}"
+    path = cli.resolve_config("dask-local")
+    assert path.endswith("dask-local.yaml") and os.path.isfile(path)
+    # the same name with the extension, and an explicit path, both work
+    assert cli.resolve_config("dask-local.yaml") == path
+    assert cli.resolve_config(path) == path
+
+
+def test_unknown_config_names_the_alternatives():
+    cli = _driver()
+    with pytest.raises(SystemExit, match="dask-local"):
+        cli.resolve_config("no-such-config")
+
+
+def test_bad_config_fails_at_parse_time_not_at_cluster_start():
+    """A typo in --config must not surface only after the source metadata read.
+
+    That read hits the network for a remote --src, so failing late means waiting to
+    be told about a typo — and on a nohup'd run, finding out from a log much later.
+    """
+    cli = _driver()
+    with pytest.raises(SystemExit, match="dask-local"):
+        cli._parse_args(BASE_ARGV + ["--config", "definitely-not-a-config"])
+
+
+def test_serial_mode_does_not_require_a_config():
+    """--serial runs in-process with no cluster, so a config is meaningless there."""
+    cli = _driver()
+    args = cli._parse_args(BASE_ARGV + ["--serial", "--config", "not-a-real-config"])
+    assert args.serial
+
+
+def test_a_real_path_wins_over_a_bundled_name(tmp_path):
+    """Order matters: a local file must shadow a bundled name, not the reverse."""
+    cli = _driver()
+    shadow = tmp_path / "dask-local"
+    shadow.write_text("jobqueue: {}\n")
+    assert cli.resolve_config(str(shadow)) == str(shadow)

@@ -1,25 +1,31 @@
-"""Driver: index -> allowlist -> meshes -> skeletons, locally or on Rusty/SLURM.
+"""em-seg-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
 
-Run this ON A WORKSTATION, in a session that outlives your terminal. It starts a
-dask cluster whose workers are SLURM jobs (dask submits the sbatch itself via
-``scale()``), then runs the requested stages against it. Every stage is
-idempotent, so re-running the same command resumes.
+The command-line entry point for this package. Run it ON A WORKSTATION, in a session
+that outlives your terminal: it starts a dask cluster whose workers are SLURM jobs
+(dask submits the sbatch itself via ``scale()``), then runs the requested stages
+against it. Every stage is idempotent, so re-running the same command resumes.
 
     # 0. look at the pyramid first, and pick your scales from real metadata
-    python examples/run_morpho_slurm.py --src /mnt/ceph/.../seg --describe
+    em-seg-morpho --src /path/to/seg --describe
 
     # 1. small ROI, locally, to see it work end to end
-    python examples/run_morpho_slurm.py --src ... \\
-        --dst /mnt/ceph/.../morpho/segmentation --work-dir /mnt/ceph/.../morpho \\
-        --config configs/dask-local.yaml --workers 4 \\
+    em-seg-morpho --src ... \\
+        --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \\
+        --config dask-local --workers 4 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
     # 2. the same ROI on SLURM, surviving logout, publishing to s3
-    nohup python -u examples/run_morpho_slurm.py --src ... \\
-        --dst s3://bucket/sample3/segmentation --work-dir /mnt/ceph/.../morpho \\
-        --config configs/dask-slurm-any.yaml --workers 48 \\
+    nohup em-seg-morpho --src ... \\
+        --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \\
+        --config /path/to/my-slurm.yaml --workers 48 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
+
+``python -m em_seg_morpho`` is equivalent to ``em-seg-morpho``.
+
+**--config takes a path or a bundled name.** The bundled SLURM config is an *example*
+— copy it and set your account, partition, sizing and log directory. Site-specific
+configs do not belong in this repo.
 
 **--dst is the published volume; --work-dir is everything else.** --dst holds the
 segmentation scales with meshes and skeletons inside it, and may be an ``s3://``
@@ -69,6 +75,43 @@ from em_seg_morpho.scales import describe, read_scales, scale_spec
 log = logging.getLogger("em-seg-morpho")
 
 STAGES = ("seg", "index", "mesh", "skel")
+
+
+def _config_dir():
+    from importlib.resources import files
+
+    return files("em_seg_morpho") / "configs"
+
+
+def bundled_configs() -> list[str]:
+    """Names of the dask configs shipped with the package."""
+    try:
+        return sorted(p.name[: -len(".yaml")] for p in _config_dir().iterdir()
+                      if p.name.endswith(".yaml"))
+    except (FileNotFoundError, ModuleNotFoundError):       # not installed as data
+        return []
+
+
+def resolve_config(value: str) -> str:
+    """``--config`` -> a filesystem path. A real path wins; else a bundled name.
+
+    The default used to be the repo-relative ``configs/dask-local.yaml``, which only
+    worked with the current directory set to a source checkout — fine for a script
+    in ``examples/``, useless for an installed command. Order matters: an existing
+    path is honoured first, so every previously-working invocation keeps working and
+    a local file can shadow a bundled name.
+    """
+    if os.path.exists(value):
+        return value
+    stem = value[: -len(".yaml")] if value.endswith(".yaml") else value
+    candidate = _config_dir() / f"{stem}.yaml"
+    if candidate.is_file():
+        return str(candidate)
+    names = bundled_configs()
+    raise SystemExit(
+        f"--config {value!r}: no such file, and not one of the bundled configs "
+        f"({', '.join(names) if names else 'none found'}). Pass a path to your own "
+        f"YAML, or one of those names.")
 
 
 def _parse_args(argv=None):
@@ -135,7 +178,11 @@ def _parse_args(argv=None):
                         "misses sparse blocks and the miss does not converge, so an "
                         "un-dilated filter silently skips real data")
 
-    p.add_argument("--config", default="configs/dask-local.yaml")
+    p.add_argument("--config", default="dask-local",
+                   help="dask cluster config: a path to your own YAML, or the name "
+                        f"of one shipped with the package ({', '.join(bundled_configs())}). "
+                        "The bundled SLURM one is an EXAMPLE — copy it and edit the "
+                        "account, partition, sizing and log directory for your site")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--serial", action="store_true",
                    help="no dask at all — run in this process (smallest smoke test)")
@@ -163,6 +210,12 @@ def _parse_args(argv=None):
                 "(e.g. --roi-scale 2).")
     if args.roi_scale is not None and not args.roi:
         p.error("--roi-scale has no effect without --roi")
+
+    # Resolve here, not at cluster start: a mistyped --config would otherwise
+    # surface only after the source metadata read, which on a remote source costs
+    # seconds of network before telling you about a typo.
+    if not args.serial:
+        args.config = resolve_config(args.config)
     return args
 
 
@@ -423,7 +476,8 @@ def _main(args) -> int:
         run_all(None)
     else:
         # Keep workers x cores within your QOS CPU cap.
-        with start_dask(args.workers, config_path=args.config, label="em-seg-morpho") as client:
+        with start_dask(args.workers, config_path=args.config,   # already resolved
+                        label="em-seg-morpho") as client:
             run_all(client)
 
     # Point the volume info at whichever subresources now exist, so one
