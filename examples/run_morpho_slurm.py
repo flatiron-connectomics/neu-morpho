@@ -111,10 +111,12 @@ def _parse_args(argv=None):
                         "at ~2.6x fewer vertices but ~1.7x the per-block time, and "
                         "requires isotropic voxels; 'kimimaro' is the older tracer "
                         "(see docs/skeletonization-plan.md)")
-    p.add_argument("--neutu-cost", default="voxel", choices=("voxel", "edge"),
-                   help="--tracer neutu only: 'edge' applies NeuTu's symmetric edge "
-                        "cost and agrees with NeuTu more closely, but its memory was "
-                        "only measured whole-body, not per block")
+    p.add_argument("--neutu-cost", default="edge", choices=("voxel", "edge"),
+                   help="--tracer neutu only (default edge). 'edge' is NeuTu's own "
+                        "symmetric cost and matches it more closely; measured in block "
+                        "mode it costs 3%% memory and 5%% time over 'voxel'. 'voxel' "
+                        "is O(voxels) and useful if a component ever exceeds "
+                        "SkeletonConfig.neutu_edge_max_gb")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,

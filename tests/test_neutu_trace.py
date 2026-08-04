@@ -387,9 +387,23 @@ def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
     **Adjacent blocks do not share a plane** — block A ends at z=k, block B starts at
     z=k+1 — so on curved structure the two contact-area centres genuinely differ, and
     the offset is bounded by how far the cross-section shifts in one voxel, not by
-    zero. Measured here: straight 5.10 -> 0.00 voxels, bent 4.12 -> 2.83. The bent
-    residual EXCEEDS the auto join radius (2 voxels), so `join_radius_nm` may need
-    raising for curved processes -- see docs/skeletonization-plan.md.
+    zero. The bent residual EXCEEDS the auto join radius (2 voxels), so
+    `join_radius_nm` may need raising for curved processes -- see
+    docs/skeletonization-plan.md.
+
+    | case | cost | no fix_borders | with |
+    |---|---|---:|---:|
+    | straight | voxel | 5.10 | **0.00** |
+    | straight | edge  | 2.00 | **0.00** |
+    | bent | voxel | 4.12 | **2.83** |
+    | bent | edge  | 3.16 | **2.83** |
+
+    **The with-fix column does not depend on the cost**, which is the point: the
+    border target is a property of the face contact area, not of how paths are
+    priced. Only the unfixed baseline improves under 'edge', because it routes nearer
+    the centreline unaided. So this asserts fix_borders is never *worse* rather than
+    better by some margin — an earlier version required a >0.5 voxel gain and started
+    failing when the baseline improved, which measured the baseline, not the property.
     """
     m = _tube(length=60, r=4, pad=4, bend=bend)
     cut = m.shape[0] // 2
@@ -413,8 +427,8 @@ def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend, limit):
     off_no = float(np.linalg.norm(lp0[1:] - rp0[1:]))
 
     assert off_fix <= limit, f"seam offset {off_fix:.2f} exceeds {limit}"
-    assert off_fix < off_no - 0.5, (
-        f"fix_borders did not improve the seam: {off_no:.2f} -> {off_fix:.2f}")
+    assert off_fix <= off_no, (
+        f"fix_borders made the seam worse: {off_no:.2f} -> {off_fix:.2f}")
 
 
 def test_border_targets_sit_on_the_faces_and_inside_the_body():

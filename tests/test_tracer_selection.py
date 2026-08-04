@@ -15,7 +15,28 @@ def test_default_tracer_is_neutu():
     notice this flipping — and the two tracers produce different skeletons.
     """
     assert SkeletonConfig().tracer == "neutu"
-    assert SkeletonConfig().neutu_cost == "voxel"
+    assert SkeletonConfig().neutu_cost == "edge"
+
+
+def test_edge_memory_guard_raises_instead_of_oom():
+    """The 'edge' cost builds an explicit per-component graph; cap it.
+
+    Raising beats OOM because this runs on dask workers, where an OOM kills the
+    worker and reads as infrastructure trouble rather than a sizing problem. The
+    cap is set so it cannot fire at the shipped 256^3 block, so the test has to
+    lower it to exercise the path at all.
+    """
+    from em_seg_morpho import neutu_trace
+
+    m = _two_body_block(n=32)
+    tiny = SkeletonConfig(anisotropy=(32.0,) * 3, dust_threshold=0, tracer="neutu",
+                          neutu_cost="edge", neutu_edge_max_gb=1e-9)
+    with pytest.raises(MemoryError, match="neutu_edge_max_gb|edge"):
+        skeleton.skeletonize_block(m, (0, 0, 0), tiny)
+
+    # ...and the shipped cap is high enough that a full 256^3 component still fits,
+    # which is what makes it safe to leave on by default.
+    assert 256 ** 3 * neutu_trace.EDGE_BYTES_PER_VOXEL / 1e9 < SkeletonConfig().neutu_edge_max_gb
 
 
 def _driver():

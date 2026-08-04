@@ -117,7 +117,18 @@ PATIENCE = None
 # uses NeuTu's symmetric d*[f(u)+f(v)] via scipy. They agree only for uniform step
 # lengths; measured inside real bulbs the per-voxel routes cost ~10% more under
 # NeuTu's own cost and never matched (0/16). See docs/skeletonization-plan.md.
-COST = "voxel"
+COST = "edge"
+
+# "edge" is the only part of the tracer whose memory scales with the component, so
+# it gets a cap. ~630 B per component voxel, measured on solid slabs up to 1.2M
+# voxels (COO intermediates + the symmetrised CSR; an earlier note said 320 B,
+# which counted only the final CSR). Rounded up for headroom.
+EDGE_BYTES_PER_VOXEL = 700
+# 16 GB against ~37 GB/worker. Chosen so it CANNOT fire at the shipped 256^3 block
+# -- a component filling one entirely is 16.7M voxels ~ 11.7 GB -- while still
+# refusing before an OOM on a larger block. In real data it is nowhere close: the
+# largest allowlisted component in a dense 256^3 block measured 112k voxels, 0.08 GB.
+EDGE_MAX_GB = 16.0
 
 # NeuTu's `skeletonRadius`, the cap on the skeleton-tube radius used for the path
 # mask (gui/zspgrowparser.cpp:297). The mask radius is min(EDT + 1, this).
@@ -179,7 +190,8 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                 attach_at_skeleton: bool = ATTACH_AT_SKELETON,
                 fix_borders: bool = False, face_targets=None,
                 keep_single_object: bool = KEEP_SINGLE_OBJECT,
-                dust_threshold: int = 0, connectivity: int = 26, max_paths=None):
+                dust_threshold: int = 0, connectivity: int = 26, max_paths=None,
+                edge_max_gb: float = EDGE_MAX_GB):
     """Skeletonize a binary mask the way NeuTu does. Voxel units throughout.
 
     Returns an ``osteoid.Skeleton`` whose ``vertices`` are zyx voxel coordinates
@@ -260,7 +272,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
                                 cost=cost, attach_at_skeleton=attach_at_skeleton,
                                 border_targets=bt,
                                 keep_single_object=keep_single_object,
-                                max_paths=max_paths)
+                                max_paths=max_paths, edge_max_gb=edge_max_gb)
         if len(np.asarray(skel.vertices)) == 0:
             continue
         skel.vertices = np.asarray(skel.vertices, dtype=np.float32) + np.array(
@@ -276,7 +288,7 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
                      patience=PATIENCE, cost=COST,
                      attach_at_skeleton=ATTACH_AT_SKELETON, border_targets=None,
                      keep_single_object=KEEP_SINGLE_OBJECT, max_paths=None,
-                     dbf=None):
+                     dbf=None, edge_max_gb=EDGE_MAX_GB):
     """TEASAR over a single connected component. See :func:`skeletonize`."""
     import dijkstra3d
     import edt
@@ -307,7 +319,8 @@ def _trace_component(labels, *, scale, const, min_length=MIN_LENGTH,
 
     w = neutu_pdrf(DBF)
     if cost == "edge":
-        pred, inside_idx, pos_map, src_c = _edge_weighted_parents(labels, w, root)
+        pred, inside_idx, pos_map, src_c = _edge_weighted_parents(
+            labels, w, root, max_gb=edge_max_gb)
 
         def path_to(t):
             t = tuple(int(v) for v in t)
@@ -545,7 +558,7 @@ def _truncate_at_skeleton(path, path_mask, attach_to=None):
     return np.concatenate([anchor, cut], axis=0)
 
 
-def _edge_weighted_parents(labels, weight, root):
+def _edge_weighted_parents(labels, weight, root, max_gb=EDGE_MAX_GB):
     """Parent field under NeuTu's **symmetric edge** cost ``d·[f(u) + f(v)]``.
 
     ``dijkstra3d`` cannot express this — every one of its entry points takes a
@@ -574,6 +587,23 @@ def _edge_weighted_parents(labels, weight, root):
     shape = labels.shape
     flat = labels.reshape(-1, order="F")
     inside = np.flatnonzero(flat != 0)
+
+    # The one way this cost can hurt: memory scales with the COMPONENT, and the
+    # explicit graph is the only part of the tracer that does. Measured ~630 B per
+    # component voxel (COO + the symmetrised CSR, not just the final CSR). Refuse
+    # rather than OOM: this runs on dask workers, where an OOM kills the worker and
+    # reads as an infrastructure failure rather than a sizing one.
+    est_gb = len(inside) * EDGE_BYTES_PER_VOXEL / 1e9
+    if est_gb > max_gb:
+        raise MemoryError(
+            f"neutu_cost='edge' needs ~{est_gb:.1f} GB for a {len(inside):,}-voxel "
+            f"component, over the {max_gb:.1f} GB cap "
+            f"(SkeletonConfig.neutu_edge_max_gb). Use a smaller block_shape, raise "
+            f"the cap if the workers have the memory, or fall back to "
+            f"neutu_cost='voxel', which is O(voxels) but strays from NeuTu inside "
+            f"bulbs. At the shipped 256^3 block this cannot trigger: a component "
+            f"filling the whole block is {256**3:,} voxels ~ "
+            f"{256**3 * EDGE_BYTES_PER_VOXEL / 1e9:.1f} GB.")
     pos = np.full(flat.size, -1, dtype=np.int64)
     pos[inside] = np.arange(len(inside))
     f = np.asarray(weight).reshape(-1, order="F")[inside].astype(np.float64)

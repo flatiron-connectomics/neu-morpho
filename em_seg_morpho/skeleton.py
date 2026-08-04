@@ -154,6 +154,7 @@ def _skeletonize_block_neutu(labels, present, cfg: SkeletonConfig) -> dict[int, 
         skel = neutu_trace.skeletonize(
             sub, scale=cfg.neutu_scale, const=cfg.neutu_const_vox,
             min_length=cfg.neutu_min_length_vox, cost=cfg.neutu_cost,
+            edge_max_gb=cfg.neutu_edge_max_gb,
             face_targets=ft if ft is not None else np.zeros((0, 3), np.int64),
             dust_threshold=cfg.dust_threshold)
         v = np.asarray(skel.vertices, dtype=float)

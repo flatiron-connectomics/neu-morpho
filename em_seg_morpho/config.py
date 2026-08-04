@@ -95,13 +95,23 @@ class SkeletonConfig:
     # uniform step lengths, and inside real bulbs the per-voxel routes cost ~10% more
     # under NeuTu's own cost (0 of 16 paths matched). Over the 12-body benchmark
     # "edge" is closer to NeuTu on every axis -- cable 1.00x vs 1.07x, centreline 0.66
-    # vs 0.83 voxels -- and runtime is a wash.
+    # vs 0.83 voxels.
     #
-    # It still defaults to "voxel" because the block-mode timing and memory figures
-    # were taken that way; "edge" was only measured whole-body, where it roughly
-    # doubled peak memory (6.4 vs 5.5 GB on a 10^6-voxel component). Block components
-    # are far smaller so that likely does not carry over, but it is unmeasured.
-    neutu_cost: str = "voxel"
+    # It defaults to "edge" because that is NeuTu's actual cost and reproducing NeuTu
+    # is the goal. The cost of it was measured IN BLOCK MODE on a real dense 256^3
+    # block (1,170 allowlisted labels), not whole-body: peak RSS 1.62 vs 1.57 GB and
+    # 224.9 vs 214.4 s -- 3% memory, 5% time, same 1,150 bodies. (An earlier note here
+    # claimed "roughly doubled memory" from a whole-body figure that was both
+    # inapplicable and self-contradictory; the block numbers supersede it.)
+    neutu_cost: str = "edge"
+
+    # Cap for the one thing "edge" scales with: it builds an explicit graph per
+    # connected component, ~630 B/voxel. Exceeding this raises rather than OOMs,
+    # because an OOM on a dask worker reads as an infrastructure failure rather than
+    # a sizing one. It cannot fire at the 256^3 block above -- one component filling
+    # the entire block is ~11.7 GB, and the largest measured in real data was 112k
+    # voxels (0.08 GB). It exists for larger block_shape values.
+    neutu_edge_max_gb: float = 16.0
 
     anisotropy: tuple[float, float, float] = (8.0, 8.0, 8.0)   # (z, y, x) nm at skeleton_scale
     skeleton_scale: int = 2

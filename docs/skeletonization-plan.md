@@ -663,15 +663,41 @@ have it.
 
 ### Two decisions to carry into the tracer swap
 
-**`cost="edge"` is now wired in as `SkeletonConfig.neutu_cost`** — done, and
-validated at the source so a mistyped value raises rather than silently falling
-through to the voxel path. It still **defaults to `"voxel"`**, deliberately: the
-block-mode timing (186.5 s/block) and the memory figures were taken that way, while
-`"edge"` was only ever measured whole-body, where it roughly doubled peak memory
-(6.4 vs 5.5 GB on a 10⁶-voxel component). Block components are far smaller so that
-probably does not carry over — but it is unmeasured, and the earlier plan to pair it
-with a component-size cap was sized for the whole-body path, not this one. Measure
-block-mode memory before changing the default.
+**`cost="edge"` is the default** (`SkeletonConfig.neutu_cost`), validated at the
+source so a mistyped value raises rather than silently falling through. It is NeuTu's
+actual cost, and reproducing NeuTu is the goal; over the 12-body benchmark it is
+closer on every axis — cable 1.00× vs 1.07×, centreline 0.66 vs 0.83 voxels.
+
+**It was measured in block mode**, which is what an earlier revision of this section
+lacked. One real dense 256³ block, 1,170 allowlisted labels, fresh process per cost:
+
+| cost | peak RSS | wall | bodies |
+|---|---:|---:|---:|
+| `voxel` | 1.57 GB | 214.4 s | 1,150 |
+| `edge` | **1.62 GB** | **224.9 s** | 1,150 |
+
+**+3% memory, +5% time** — against ~37 GB/worker, i.e. ~23× headroom. That supersedes
+the note this section used to carry, which claimed `"edge"` "roughly doubled peak
+memory (6.4 vs 5.5 GB)". That figure was whole-body, a mode block-first does not use,
+and it was self-contradictory besides: 6.4/5.5 is 1.16×, not 2×. **It was the stated
+reason for a default that had already been decided against, so it kept a measured
+improvement out of production for a full-volume run.**
+
+The reason it is cheap: `"edge"` is the only part of the tracer whose memory scales
+with the *component*, at ~630 B/voxel, and real components are tiny next to a block —
+the largest allowlisted one in that block was **112k voxels, 0.08 GB**. The
+theoretical worst case, one component filling a whole 256³ block, is 16.7M voxels ≈
+11.7 GB. `SkeletonConfig.neutu_edge_max_gb` (default 16 GB) raises rather than OOMs
+above that, since an OOM on a dask worker reads as infrastructure trouble rather than
+a sizing problem. **The cap cannot fire at 256³ blocks** — it exists for larger ones,
+where a full-block component would need ~94 GB at 512³.
+
+A detail worth knowing before reading seam numbers: **`fix_borders` output does not
+depend on the cost.** The border target is a property of the face contact area, not
+of how paths are priced — measured, the seam offset with `fix_borders` is identical
+under both costs (0.00 straight, 2.83 bent). Only the *unfixed* baseline improves
+under `"edge"` (5.10 → 2.00, 4.12 → 3.16), because it routes nearer the centreline
+unaided.
 
 **Gap-bridging (`reconnect`, `maximalDistance=50`) is a product decision, not a
 fix.** NeuTu joins disconnected roots within 50 voxels (1,600 nm at 32 nm), which
