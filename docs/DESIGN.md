@@ -309,6 +309,13 @@ a remote one up front rather than failing deep inside a write. For a local `--ds
 the work dir defaults to its parent, which reproduces the layout from when `--dst`
 meant the run root.
 
+To inspect what was actually published, `scripts/view_body_3d.py --volume <dst> <ids>`
+reads a body's mesh and skeleton back **out of the volume** — local or `s3://` — and
+writes one self-contained interactive HTML per body: the mesh as a translucent
+surface, the skeleton as conical frusta whose end radii are the stored per-vertex
+radii, each toggleable from the legend. Reading the published artefact rather than an
+intermediate is the point; it is the only check that covers the encode step.
+
 ### What the split costs, and the guard that pays for it
 
 Bookkeeping used to live *inside* the output, so the record and the data shared a
