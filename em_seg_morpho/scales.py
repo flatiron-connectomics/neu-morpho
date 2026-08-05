@@ -37,7 +37,7 @@ class ScaleInfo:
 
 def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
     """All pyramid levels of a source, finest first. Raises if metadata is absent."""
-    from em_volume_tools.introspect import detect_backend
+    from em_volume_tools.source_metadata import detect_backend
 
     spec = {"path": spec} if isinstance(spec, str) else dict(spec)
     kv = _kvstore(spec)
@@ -127,7 +127,7 @@ def scale_spec(spec: str | Mapping[str, Any], scale_index: int) -> dict:
     coordinates you pass are then interpreted 4x too fine and read the wrong place
     entirely. That fails as empty data, not as an error.
     """
-    from em_volume_tools.introspect import detect_backend
+    from em_volume_tools.source_metadata import detect_backend
     from em_volume_tools.location import join
 
     spec = {"path": spec} if isinstance(spec, str) else dict(spec)
