@@ -751,14 +751,13 @@ default. Nothing removed was on the production path, and none of it had a test �
 which is itself why it is listed: each was reachable-but-never-reached, the state
 that reads as a supported option and is not one.
 
-**None of it ever existed on `main`** — every item was added and removed inside the
-`skeleton-quality-benchmark` branch, so the table below is the record, not the git
-history. The last commit that still had them all is `b531515` (`git show
-b531515:<path>`); that SHA survives only if this branch was merged with a merge
-commit, since squash and rebase merges rewrite it. Deliberately left untagged: the
-judgement was that none of this is worth rolling back to. If you disagree later, tag
-it before the branch is pruned. The pre-`neutu` behaviour, which *is* worth keeping,
-is tagged separately as **`last-kimimaro-default`**.
+**The table below is the record, not the git history.** The last commit that still
+had every item is `3b134a9` (`git show 3b134a9:<path>`), but do not lean on that SHA:
+history has already been rewritten once — to scrub internal paths before the repo was
+opened up — and any further rewrite renumbers it again. It was deliberately left
+untagged, on the judgement that none of this is worth rolling back to; tag it if you
+ever disagree. The pre-`neutu` behaviour, which *is* worth keeping, is tagged as
+**`last-kimimaro-default`**, and tags survive rewrites.
 
 | Removed | Was | Why it went |
 |---|---|---|
