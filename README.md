@@ -156,3 +156,13 @@ See `docs/DESIGN.md`.
 
 [`vol2mesh`]: https://github.com/janelia-flyem/vol2mesh
 [`kimimaro`]: https://github.com/seung-lab/kimimaro
+
+## License
+
+©2026 The Simons Foundation, Inc.
+
+Licensed under the [GNU General Public License v3.0 or later](LICENSE). GPL rather
+than a permissive licence because this package imports `kimimaro` and `dijkstra3d`,
+both GPL-3.0-or-later, which makes it a combined work — see the Licence note in
+`em_seg_morpho/neutu_trace.py`. See [CONTRIBUTING.md](CONTRIBUTING.md) for how
+contributions are licensed.
