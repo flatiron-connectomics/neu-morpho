@@ -31,7 +31,6 @@ dependencies:
   - scipy
   - tensorstore>=0.1.70
   - zarr>=3
-  - ngff_zarr>=0.39
   - jsonschema
   - h5py
   - tifffile
@@ -44,10 +43,15 @@ dependencies:
 
   - pytest
 
-  # Pure-Python, not on conda-forge. osteoid is imported directly by
-  # precomputed.py / fragments.py / skeleton.py; it arrives transitively via
-  # kimimaro but is declared here because we import it ourselves.
+  # Pure Python, so pip is fine — the ABI argument above applies only to compiled
+  # packages. ngff-zarr is here rather than on conda-forge because a CI run hit a
+  # 404 fetching its conda artifact; from PyPI there is one less mirror to depend
+  # on, and being pure Python it cannot mismatch the conda-built stack.
+  #
+  # osteoid is imported directly by precomputed.py / fragments.py / skeleton.py.
+  # It arrives transitively via kimimaro but is declared because we import it.
   - pip:
       - kimimaro
       - DracoPy
       - osteoid
+      - ngff-zarr>=0.39
