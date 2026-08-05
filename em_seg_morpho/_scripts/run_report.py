@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Human-readable HTML summary of a run, from its work directory.
 
-    python scripts/run_report.py <work-dir> [-o report.html]
+    em-morpho run-report <work-dir> [-o report.html]
 
 Reads whatever is present — ``run_plan.json``, ``run_summary.json``, the progress
 manifests, ``fusion_stats.jsonl`` and ``metrics.db`` — so it also works on a run

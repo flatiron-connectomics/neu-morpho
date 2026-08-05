@@ -1,13 +1,13 @@
-"""Point-in-time progress for a detached em-seg-morpho run.
+"""Point-in-time progress for a detached em-morpho run.
 
 Reads the work dir only — the JSONL manifests, ``run_plan.json`` and the fragment
 stores. **It never contacts the dask cluster, S3, or SLURM**, so it is cheap and
 safe to run as often as you like from any terminal:
 
-    python scripts/run_progress.py /mnt/ceph/users/<you>/morpho-run
+    em-morpho progress /mnt/ceph/users/<you>/morpho-run
 
     # measure a rate and extrapolate, by sampling the manifests twice
-    python scripts/run_progress.py <work-dir> --sample 60
+    em-morpho progress <work-dir> --sample 60
 
 Denominators come from ``run_plan.json``, which the CLI writes at startup
 (ROI ∩ occupancy block counts, which are expensive to re-derive because they need
@@ -179,7 +179,7 @@ def _report(work: str, plan: dict, snap: dict[str, Counter]) -> dict[str, int]:
     return done_now
 
 
-def main() -> None:
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("work_dir", help="the run's --work-dir")
@@ -187,7 +187,7 @@ def main() -> None:
                     help="re-read after N seconds to report a rate and ETA")
     ap.add_argument("--failures", type=int, default=3, metavar="N",
                     help="show N recent failure reasons per stage (0 to skip)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     work = args.work_dir.rstrip("/")
     if not os.path.isdir(work):
@@ -251,7 +251,8 @@ def main() -> None:
             print(line)
         print("  (a stage that is not currently running shows 0; ETA needs a "
               "denominator from run_plan.json and a nonzero rate)")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

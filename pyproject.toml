@@ -32,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-em-seg-morpho = "em_seg_morpho.cli:main"
+em-morpho = "em_seg_morpho.cli:main"
 
 [project.optional-dependencies]
 # Viewing published output: scripts/view_body_3d.py. em_seg_morpho.readback, which
@@ -53,11 +53,9 @@ dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["em_seg_morpho"]
-# em_seg_morpho/configs/*.yaml are package DATA and ship automatically, because
-# hatchling includes every tracked file under `packages`. The console script needs
-# them: `--config dask-local` resolves through importlib.resources. Keep them TRACKED
-# — the repo-root `configs/` is gitignored for site-specific files, and an unanchored
-# ignore pattern would silently exclude these too (see .gitignore).
+# No dask config data here: the templates live in em-blockrun, next to start_dask,
+# and `--config dask-local` resolves through it. Site-specific configs stay out of the
+# repo entirely — the top-level `configs/` is gitignored.
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

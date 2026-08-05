@@ -249,7 +249,7 @@ the "need a body's bbox before we can crop it" dependency.
   `postprocess_tick_nm` (all in nm, since vertices are nm).
 - `OutputConfig`.
 
-## Running a job (`em-seg-morpho` / `em_seg_morpho/cli.py`)
+## Running a job (`em-morpho run` / `em_seg_morpho/cli.py`)
 
 One driver runs `index -> allowlist -> mesh -> skel` (`--stages` picks a subset)
 against a dask cluster from `em_blockrun.start_dask`, or in-process with

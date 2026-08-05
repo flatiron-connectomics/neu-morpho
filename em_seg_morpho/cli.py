@@ -1,31 +1,39 @@
-"""em-seg-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
+"""em-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
 
-The command-line entry point for this package. Run it ON A WORKSTATION, in a session
-that outlives your terminal: it starts a dask cluster whose workers are SLURM jobs
-(dask submits the sbatch itself via ``scale()``), then runs the requested stages
-against it. Every stage is idempotent, so re-running the same command resumes.
+The command-line entry point for this package.
+
+    em-morpho run ...              # the pipeline
+    em-morpho progress <work-dir>  # live per-stage counts
+    em-morpho run-report <work-dir># self-contained HTML summary
+
+Run ``run`` ON A WORKSTATION, in a session that outlives your terminal: it starts a
+dask cluster whose workers are SLURM jobs (dask submits the sbatch itself via
+``scale()``), then runs the requested stages against it. Every stage is idempotent,
+so re-running the same command resumes.
 
     # 0. look at the pyramid first, and pick your scales from real metadata
-    em-seg-morpho --src /path/to/seg --describe
+    em-morpho run --src /path/to/seg --describe
 
     # 1. small ROI, locally, to see it work end to end
-    em-seg-morpho --src ... \\
+    em-morpho run --src ... \\
         --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \\
         --config dask-local --workers 4 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
     # 2. the same ROI on SLURM, surviving logout, publishing to s3
-    nohup em-seg-morpho --src ... \\
+    nohup env PYTHONUNBUFFERED=1 em-morpho run --src ... \\
         --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \\
-        --config /path/to/my-slurm.yaml --workers 48 \\
+        --config dask-slurm-example --config ~/my-site.yaml --workers 48 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
 
-``python -m em_seg_morpho`` is equivalent to ``em-seg-morpho``.
+``python -m em_seg_morpho`` is equivalent to ``em-morpho``. ``PYTHONUNBUFFERED=1`` is
+the console-script equivalent of ``python -u``; without it the log lags the run.
 
-**--config takes a path or a bundled name.** The bundled SLURM config is an *example*
-— copy it and set your account, partition, sizing and log directory. Site-specific
-configs do not belong in this repo.
+**--config takes a bundled template name or a path, and is repeatable**, deep-merged
+left to right — so a site config carries only the keys that differ. The templates ship
+with **em-blockrun**, next to ``start_dask``, so every consumer shares one set;
+site-specific configs do not belong in this repo.
 
 **--dst is the published volume; --work-dir is everything else.** --dst holds the
 segmentation scales with meshes and skeletons inside it, and may be an ``s3://``
@@ -60,7 +68,7 @@ import sys
 import time
 from datetime import datetime
 
-from em_blockrun import start_dask
+from em_blockrun import bundled_configs, load_config, start_dask
 
 from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from em_seg_morpho.metrics_db import MetricsDB
@@ -77,46 +85,26 @@ log = logging.getLogger("em-seg-morpho")
 STAGES = ("seg", "index", "mesh", "skel")
 
 
-def _config_dir():
-    from importlib.resources import files
+def _configs(args) -> list[str]:
+    """``--config`` values, defaulting to em-blockrun's bundled local template.
 
-    return files("em_seg_morpho") / "configs"
-
-
-def bundled_configs() -> list[str]:
-    """Names of the dask configs shipped with the package."""
-    try:
-        return sorted(p.name[: -len(".yaml")] for p in _config_dir().iterdir()
-                      if p.name.endswith(".yaml"))
-    except (FileNotFoundError, ModuleNotFoundError):       # not installed as data
-        return []
-
-
-def resolve_config(value: str) -> str:
-    """``--config`` -> a filesystem path. A real path wins; else a bundled name.
-
-    The default used to be the repo-relative ``configs/dask-local.yaml``, which only
-    worked with the current directory set to a source checkout — fine for a script
-    in ``examples/``, useless for an installed command. Order matters: an existing
-    path is honoured first, so every previously-working invocation keeps working and
-    a local file can shadow a bundled name.
+    Resolution, layering and key validation all live in ``em_blockrun.dask_config``,
+    next to ``start_dask``. This package used to carry its own copy of that, and
+    em-volume-tools a third — the kind of duplication that drifts silently.
     """
-    if os.path.exists(value):
-        return value
-    stem = value[: -len(".yaml")] if value.endswith(".yaml") else value
-    candidate = _config_dir() / f"{stem}.yaml"
-    if candidate.is_file():
-        return str(candidate)
-    names = bundled_configs()
-    raise SystemExit(
-        f"--config {value!r}: no such file, and not one of the bundled configs "
-        f"({', '.join(names) if names else 'none found'}). Pass a path to your own "
-        f"YAML, or one of those names.")
+    return args.config or ["dask-local"]
 
 
 def _parse_args(argv=None):
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    top = argparse.ArgumentParser(
+        prog="em-morpho", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = top.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser(
+        "run", help="index -> allowlist -> meshes -> skeletons",
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.set_defaults(func=_main)
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
                                  "meshes/skeletons inside it. Local path or s3://... "
@@ -178,11 +166,11 @@ def _parse_args(argv=None):
                         "misses sparse blocks and the miss does not converge, so an "
                         "un-dilated filter silently skips real data")
 
-    p.add_argument("--config", default="dask-local",
-                   help="dask cluster config: a path to your own YAML, or the name "
-                        f"of one shipped with the package ({', '.join(bundled_configs())}). "
-                        "The bundled SLURM one is an EXAMPLE — copy it and edit the "
-                        "account, partition, sizing and log directory for your site")
+    p.add_argument("--config", action="append", default=None, metavar="NAME_OR_PATH",
+                   help=f"dask config: a bundled template ({', '.join(bundled_configs())}) "
+                        f"or a path to your own YAML. Repeatable, deep-merged left to "
+                        f"right, so an overlay need only carry what differs from the "
+                        f"template. Default: dask-local")
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--serial", action="store_true",
                    help="no dask at all — run in this process (smallest smoke test)")
@@ -195,7 +183,27 @@ def _parse_args(argv=None):
     p.add_argument("--store-logs", action="store_true",
                    help="keep TensorStore's benign S3 credential-chain logging "
                         "(suppressed by default; real errors are never suppressed)")
-    args = p.parse_args(argv)
+    # --- progress -----------------------------------------------------------
+    q = sub.add_parser("progress", help="live progress of a run, from its work dir",
+                       description="Per-stage task counts against the plan, for a run "
+                                   "in flight. Reads only; re-run to refresh.")
+    q.add_argument("work_dir")
+    q.add_argument("--sample", type=int, default=None, metavar="SECONDS",
+                   help="sample the manifests twice this far apart to estimate a rate")
+    q.set_defaults(func=_cmd_progress)
+
+    # --- run-report ---------------------------------------------------------
+    q = sub.add_parser("run-report", help="self-contained HTML summary of a run",
+                       description="Write a human-readable HTML summary of a run from "
+                                   "its work dir. Works on an in-flight run too.")
+    q.add_argument("work_dir")
+    q.add_argument("-o", "--out", default=None,
+                   help="output HTML (default: <work-dir>/report.html)")
+    q.set_defaults(func=_cmd_run_report)
+
+    args = top.parse_args(argv)
+    if args.command != "run":
+        return args
 
     # --roi-scale used to default to --mesh-scale. That is a silent default on a
     # number that changes what gets processed: the same six values name a box 4x
@@ -211,11 +219,11 @@ def _parse_args(argv=None):
     if args.roi_scale is not None and not args.roi:
         p.error("--roi-scale has no effect without --roi")
 
-    # Resolve here, not at cluster start: a mistyped --config would otherwise
+    # Validate here, not at cluster start: a mistyped --config would otherwise
     # surface only after the source metadata read, which on a remote source costs
     # seconds of network before telling you about a typo.
     if not args.serial:
-        args.config = resolve_config(args.config)
+        load_config(_configs(args))
     return args
 
 
@@ -250,6 +258,23 @@ def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
     return sum(1 for b in blocks if b.index in keep)
 
 
+def _cmd_progress(args) -> int:
+    """Live per-stage progress. The implementation is a script, kept out of the
+    package because it is a read-only operator tool with a matplotlib-free, stdlib-only
+    dependency set — the subcommand just makes it discoverable."""
+    from em_seg_morpho._scripts import run_progress
+
+    argv = [args.work_dir] + (["--sample", str(args.sample)] if args.sample else [])
+    return run_progress.main(argv) or 0
+
+
+def _cmd_run_report(args) -> int:
+    from em_seg_morpho._scripts import run_report
+
+    argv = [args.work_dir] + (["-o", args.out] if args.out else [])
+    return run_report.main(argv) or 0
+
+
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args(argv)
@@ -258,8 +283,8 @@ def main(argv=None) -> int:
     # TensorStore's S3 stack logs its credential-provider chain at ERROR severity
     # on success; on a real run that buried the actual output. Real failures
     # (PERMISSION_DENIED and friends) are never suppressed — see logs.NEVER_DROP.
-    with quiet_store_logs(not args.store_logs):
-        return _main(args)
+    with quiet_store_logs(not getattr(args, "store_logs", False)):
+        return args.func(args)
 
 
 def _main(args) -> int:
@@ -346,7 +371,7 @@ def _main(args) -> int:
                occ_voxel, args.occupancy_dilate)
 
     log.info("source pyramid:\n%s", describe(args.src))
-    # Keep the counts: they are the denominators scripts/run_progress.py needs, and
+    # Keep the counts: they are the denominators `em-morpho progress` needs, and
     # recomputing them means re-reading the occupancy array.
     planned = {
         "index": _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ),
@@ -476,8 +501,8 @@ def _main(args) -> int:
         run_all(None)
     else:
         # Keep workers x cores within your QOS CPU cap.
-        with start_dask(args.workers, config_path=args.config,   # already resolved
-                        label="em-seg-morpho") as client:
+        with start_dask(args.workers, _configs(args), label="em-morpho",
+                        effective_config_path=work) as client:
             run_all(client)
 
     # Point the volume info at whichever subresources now exist, so one

@@ -52,7 +52,9 @@ def _driver():
     return cli
 
 
-BASE_ARGV = ["--src", "x", "--dst", "y", "--work-dir", "z"]
+# The pipeline is `em-morpho run`; `progress` and `run-report` are sibling
+# subcommands, so every pipeline argument now sits behind "run".
+BASE_ARGV = ["run", "--src", "x", "--dst", "y", "--work-dir", "z"]
 
 
 def test_roi_requires_an_explicit_roi_scale():
@@ -182,27 +184,19 @@ def test_neutu_cost_is_validated_not_silently_ignored():
                                                       neutu_cost="nonsense"))
 
 
-def test_bundled_configs_are_findable_and_resolve():
-    """The console script is useless if its configs did not ship.
-
-    --config used to default to the repo-relative 'configs/dask-local.yaml', which
-    only resolved with the cwd set to a source checkout. These assert the package
-    can find its own data, which is what an installed command depends on.
-    """
+# Config resolution, layering, shadowing and key validation are em-blockrun's, and
+# are tested there (em_blockrun/tests/test_dask_config.py). What is this package's
+# business is that --config reaches them, defaults sensibly, and fails early.
+def test_config_defaults_to_the_bundled_local_template_and_is_repeatable(tmp_path):
     cli = _driver()
-    names = cli.bundled_configs()
-    assert "dask-local" in names, f"bundled configs missing: {names}"
-    path = cli.resolve_config("dask-local")
-    assert path.endswith("dask-local.yaml") and os.path.isfile(path)
-    # the same name with the extension, and an explicit path, both work
-    assert cli.resolve_config("dask-local.yaml") == path
-    assert cli.resolve_config(path) == path
-
-
-def test_unknown_config_names_the_alternatives():
-    cli = _driver()
-    with pytest.raises(SystemExit, match="dask-local"):
-        cli.resolve_config("no-such-config")
+    assert cli._configs(cli._parse_args(BASE_ARGV)) == ["dask-local"]
+    # A real overlay, because parse-time validation resolves every value — passing a
+    # made-up filename here fails, which is the behaviour we want.
+    site = tmp_path / "site.yaml"
+    site.write_text("jobqueue:\n  slurm:\n    account: your-account\n")
+    args = cli._parse_args(BASE_ARGV + ["--config", "dask-slurm-example",
+                                        "--config", str(site)])
+    assert cli._configs(args) == ["dask-slurm-example", str(site)]
 
 
 def test_bad_config_fails_at_parse_time_not_at_cluster_start():
@@ -212,7 +206,7 @@ def test_bad_config_fails_at_parse_time_not_at_cluster_start():
     be told about a typo — and on a nohup'd run, finding out from a log much later.
     """
     cli = _driver()
-    with pytest.raises(SystemExit, match="dask-local"):
+    with pytest.raises((SystemExit, FileNotFoundError), match="dask-local"):
         cli._parse_args(BASE_ARGV + ["--config", "definitely-not-a-config"])
 
 
@@ -223,9 +217,16 @@ def test_serial_mode_does_not_require_a_config():
     assert args.serial
 
 
-def test_a_real_path_wins_over_a_bundled_name(tmp_path):
-    """Order matters: a local file must shadow a bundled name, not the reverse."""
+def test_the_operator_subcommands_parse():
+    """`progress` and `run-report` are siblings of `run`, not flags on it."""
     cli = _driver()
-    shadow = tmp_path / "dask-local"
-    shadow.write_text("jobqueue: {}\n")
-    assert cli.resolve_config(str(shadow)) == str(shadow)
+    assert cli._parse_args(["progress", "/work"]).func is cli._cmd_progress
+    assert cli._parse_args(["run-report", "/work"]).func is cli._cmd_run_report
+    assert cli._parse_args(BASE_ARGV).func is cli._main
+
+
+def test_a_subcommand_is_required():
+    """A bare `em-morpho` must not silently mean `run`."""
+    cli = _driver()
+    with pytest.raises(SystemExit):
+        cli._parse_args([])
