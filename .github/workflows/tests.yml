@@ -1,0 +1,72 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # micromamba needs a login shell for its activation hook
+    defaults:
+      run:
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Sibling packages, not on PyPI. Both are public, so no token is needed.
+      - uses: actions/checkout@v4
+        with:
+          repository: flatiron-connectomics/em-blockrun
+          path: .siblings/em-blockrun
+      - uses: actions/checkout@v4
+        with:
+          repository: flatiron-connectomics/em-volume-tools
+          path: .siblings/em-volume-tools
+
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: .github/ci-environment.yml
+          cache-environment: true
+
+      - name: Install the em-* packages
+        # --no-deps is load-bearing: without it pip re-resolves conda-provided
+        # binaries (tensorstore, h5py, numpy) from PyPI and invites the ABI mismatch
+        # the environment file exists to avoid.
+        run: |
+          pip install --no-deps ./.siblings/em-blockrun ./.siblings/em-volume-tools
+          pip install --no-deps -e .
+
+      - name: Show what actually got installed
+        # The conda-only pieces are the fragile part of this environment; make the
+        # log say plainly whether they are present rather than inferring it from a
+        # failure twenty lines later. dvidutils ships no .dist-info, so
+        # importlib.metadata reports it missing while the import works — don't
+        # chase that.
+        run: |
+          python -c "
+          import importlib
+          for m in ('vol2mesh', 'dvidutils', 'kimimaro', 'tensorstore', 'em_blockrun',
+                    'em_volume_tools', 'em_seg_morpho'):
+              try:
+                  importlib.import_module(m); print(f'  ok      {m}')
+              except Exception as e:
+                  print(f'  FAILED  {m}: {type(e).__name__}: {e}'); raise
+          "
+
+      - name: Test
+        run: pytest -q
+
+      - name: Smoke-test the installed console script
+        run: |
+          pip install build
+          python -m build --wheel -o dist/
+          pip install --force-reinstall --no-deps dist/*.whl
+          cd /tmp && em-morpho --help > /dev/null && echo "em-morpho runs outside a checkout"
