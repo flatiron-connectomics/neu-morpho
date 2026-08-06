@@ -63,7 +63,8 @@ def read_run(work: str) -> dict:
     for stage in ("seg", "index", "mesh", "skel"):
         recs = _jsonl(f"{work}/progress.{stage}.jsonl")
         if recs:
-            progress[stage] = Counter((r.get("group"), r.get("status")) for r in recs)
+            progress[stage] = Counter((r.get("group"), r["status"])
+                                      for r in recs if "status" in r)
     failures = {}
     for stage in ("mesh", "skel"):
         recs = _jsonl(f"{work}/failures.{stage}.jsonl")

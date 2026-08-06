@@ -63,7 +63,9 @@ def _read_manifest(path: str) -> Counter:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            counts[(rec.get("group", rec.get("level")), rec.get("status"))] += 1
+            if "status" not in rec:
+                continue          # a manifest meta line, not a task
+            counts[(rec.get("group", rec.get("level")), rec["status"])] += 1
     return counts
 
 
