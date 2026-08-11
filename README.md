@@ -47,6 +47,31 @@ em-morpho run-report <work-dir>    # self-contained HTML summary
 `run` drives the stages against a dask cluster — local or SLURM, chosen by
 `--config`. Every stage is idempotent, so re-running the same command resumes.
 
+### The stages
+
+`--stages` takes a comma-separated subset, run in this order. The default is
+`index,mesh,skel`.
+
+| stage | what it does |
+| --- | --- |
+| `seg` | Copies the ROI's labels out as a precomputed volume, so the meshes and skeletons can be viewed against the segmentation they came from. **Off by default** — it is pure I/O and usually the most expensive stage of the four. |
+| `index` | Scans the volume once and records **every body's bounding box and voxel count** in a SQLite metrics DB. |
+| `mesh` | Multi-resolution Draco meshes, one per body. |
+| `skel` | kimimaro skeletons, one per body. |
+
+**`index` is required before `mesh` or `skel`, and it is the stage whose purpose is
+least obvious.** Meshing and skeletonization each crop a body out of the volume by its
+bounding box, and there is nowhere to ask for that box: a label's extent is only knowable
+by looking at every block it might appear in, which is exactly the scan `index`
+performs. The voxel counts it records are the other half — the size filter that builds
+the allowlist reads them, so without the DB there is no way to say "only bodies above N
+voxels". It writes no volume data, which is why it is easy to mistake for optional.
+
+Once the DB exists you can re-run the later stages without it: `--stages mesh` is the
+normal way to redo meshing after a parameter change. `mesh` and `skel` each run in two
+phases — fragments per (body, block), then one output assembled per body — so a re-run
+of only stage 2 reuses the fragments already on disk instead of recomputing them.
+
 ```bash
 # 0. look at the pyramid and pick scales from real metadata (no cluster, no writes)
 em-morpho run --src /path/to/seg --describe

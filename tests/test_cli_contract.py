@@ -45,6 +45,33 @@ def test_run_validation_still_reports_against_the_run_subparser():
     assert parser._run_parser.prog.endswith("run")
 
 
+def test_every_stage_is_described():
+    """`STAGE_DOC` is the only description of the stages, and three places read it:
+    `--help`, the published CLI reference, and the docs cheat sheet. A stage added to
+    the tuple without a description would silently go undocumented in all three."""
+    from em_seg_morpho.cli import STAGE_DOC, STAGES
+
+    assert tuple(STAGE_DOC) == STAGES
+    assert set(STAGES) == {"seg", "index", "mesh", "skel"}
+    for name, doc in STAGE_DOC.items():
+        assert len(doc) > 40, f"{name} has no real description"
+
+
+def test_the_stage_list_reaches_run_help():
+    """It lives in the description, not in `--stages`' help, because argparse's default
+    formatter re-wraps argument help and collapses the block into a wall of text."""
+    from em_seg_morpho.cli import STAGES, build_parser
+
+    run = build_parser()._run_parser
+    assert "Stages" in run.description
+    for name in STAGES:
+        assert name in run.description, f"{name} missing from run --help"
+    # the wrapped block must survive intact, which is what RawDescription buys
+    assert "\n" in run.description
+    rendered = run.format_help()
+    assert "index" in rendered.split("Stages")[1]
+
+
 def test_importing_the_cli_needs_no_conda_only_package():
     """Run in a subprocess: this test session has already imported most of them."""
     code = (

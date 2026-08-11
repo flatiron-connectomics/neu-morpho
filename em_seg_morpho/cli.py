@@ -82,7 +82,47 @@ from em_seg_morpho.scales import describe, read_scales, scale_spec
 
 log = logging.getLogger("em-seg-morpho")
 
-STAGES = ("seg", "index", "mesh", "skel")
+# One line per stage, and the ONLY place they are described. `--stages` help, the
+# published CLI reference and the docs cheat sheet are all built from this, because a
+# stage whose purpose you have to read the source to learn is a stage people skip or
+# run by accident — `index` especially, since mesh and skel silently depend on it.
+STAGE_DOC = {
+    "seg": "copy the ROI's labels out as a precomputed volume, so the meshes and "
+           "skeletons can be viewed against the segmentation they came from. Optional, "
+           "and off by default — it is pure I/O and usually the most expensive stage.",
+    "index": "scan the volume once and record every body's bounding box and voxel count "
+             "in a SQLite metrics DB. REQUIRED FIRST unless the DB already exists: mesh "
+             "and skel crop each body by its bbox and cannot ask the volume for one, and "
+             "the size filter that builds the allowlist reads the counts.",
+    "mesh": "multi-resolution Draco meshes, per body. Two phases — fragments per "
+            "(body, block), then one mesh assembled per body — so a re-run with only "
+            "this stage reuses the fragments already on disk.",
+    "skel": "kimimaro skeletons, per body, in the same two phases and with its own "
+            "manifest. Reads bounding boxes from the metrics DB.",
+}
+STAGES = tuple(STAGE_DOC)
+
+
+def stages_help(indent: str = "  ", width: int = 79) -> str:
+    """The stage list as ``--help`` prints it: one wrapped paragraph per stage.
+
+    This goes in the ``run`` subparser's *description*, not in ``--stages``' own help
+    string, because argparse's default formatter re-wraps argument help and would
+    collapse the whole thing into an unreadable wall of text. The subparser is
+    ``RawDescriptionHelpFormatter``, so a preformatted block here survives intact — and
+    the documentation site renders it the same way it renders the usage examples above
+    it, which means the terminal and the published reference show the identical text.
+    """
+    import textwrap
+
+    label = max(len(name) for name in STAGE_DOC) + 2
+    out = ["Stages, in the order they run (--stages):", ""]
+    for name, doc in STAGE_DOC.items():
+        lines = textwrap.wrap(doc, width=width - len(indent) - label)
+        out.append(f"{indent}{name:<{label}}{lines[0]}")
+        out += [f"{indent}{'':<{label}}{line}" for line in lines[1:]]
+        out.append("")
+    return "\n".join(out)
 
 
 def _configs(args) -> list[str]:
@@ -109,7 +149,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "run", help="index -> allowlist -> meshes -> skeletons",
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=f"{__doc__}\n{stages_help()}",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.set_defaults(func=_main)
     p.add_argument("--src", required=True, help="segmentation volume (path or s3://...)")
     p.add_argument("--dst", help="the published precomputed VOLUME: labels with "
@@ -124,9 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--describe", action="store_true",
                    help="print the source pyramid and exit (no cluster, no writes)")
 
-    p.add_argument("--stages", default="index,mesh,skel",
-                   help=f"comma-separated subset of {','.join(STAGES)}; 'seg' copies the "
-                        "ROI's labels out as a precomputed volume for viewing")
+    p.add_argument("--stages", default="index,mesh,skel", metavar="LIST",
+                   help=f"comma-separated subset of {','.join(STAGES)}, described under "
+                        f"'Stages' above. They run in that order, and each is idempotent "
+                        f"and resumable, so re-running a subset continues rather than "
+                        f"redoing it (default: index,mesh,skel)")
     p.add_argument("--seg-encoding", default="compressed_segmentation",
                    help="encoding for the exported segmentation (or 'raw')")
     p.add_argument("--seg-scales", default="all",
