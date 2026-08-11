@@ -95,7 +95,13 @@ def _configs(args) -> list[str]:
     return args.config or ["dask-local"]
 
 
-def _parse_args(argv=None):
+def build_parser() -> argparse.ArgumentParser:
+    """The full ``em-morpho`` parser, built but not run.
+
+    Separate from :func:`_parse_args` so the documentation can render it: the CLI
+    reference is generated from *this* object by ``sphinx-argparse``, which is what
+    stops the published usage from drifting away from ``--help``.
+    """
     top = argparse.ArgumentParser(
         prog="em-morpho", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -201,6 +207,15 @@ def _parse_args(argv=None):
                    help="output HTML (default: <work-dir>/report.html)")
     q.set_defaults(func=_cmd_run_report)
 
+    # `run`'s own subparser, so the validation below can report errors against it
+    # rather than against the top-level usage, which is what a user sees today.
+    top._run_parser = p
+    return top
+
+
+def _parse_args(argv=None):
+    top = build_parser()
+    p = getattr(top, "_run_parser", top)
     args = top.parse_args(argv)
     if args.command != "run":
         return args
