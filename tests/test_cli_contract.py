@@ -73,15 +73,30 @@ def test_the_stage_list_reaches_run_help():
 
 
 def test_importing_the_cli_needs_no_conda_only_package():
-    """Run in a subprocess: this test session has already imported most of them."""
+    """Run in a subprocess: this test session has already imported most of them.
+
+    Checks two separate things in the one subprocess, because spawning a second
+    interpreter costs more than either assertion: nothing conda-only is reachable, and
+    dask is not imported either. The latter is a startup-latency contract, not a
+    packaging one — see em-blockrun's test_lazy_dask.
+    """
+    probe = CONDA_ONLY + ["dask", "distributed"]
     code = (
         "import sys; import em_seg_morpho.cli; "
-        f"print(','.join(m for m in {CONDA_ONLY!r} "
+        f"print(','.join(m for m in {probe!r} "
         "if any(k == m or k.startswith(m + '.') for k in sys.modules)))"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                          check=True).stdout.strip()
-    assert out == "", (
-        f"importing em_seg_morpho.cli now pulls in {out}. The docs build installs from "
+    got = set(filter(None, out.split(",")))
+
+    conda = sorted(got & set(CONDA_ONLY))
+    assert not conda, (
+        f"importing em_seg_morpho.cli now pulls in {conda}. The docs build installs from "
         f"PyPI only, and these are conda-only on flyem-forge, so this would break it. "
         f"Defer the import into the function that needs it.")
+    heavy = sorted(got & {"dask", "distributed"})
+    assert not heavy, (
+        f"importing em_seg_morpho.cli now pulls in {heavy}, which is ~1 s added to every "
+        f"invocation — including `em-morpho progress`, which only reads JSONL. Import "
+        f"start_dask inside the branch that starts a cluster, not at module scope.")

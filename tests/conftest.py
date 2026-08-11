@@ -20,8 +20,8 @@ Escape hatches, in the order they win: an explicit `--basetemp` (pytest ignores 
 temproot entirely), an inherited `PYTEST_DEBUG_TEMPROOT`, and `EM_TESTS_TMPFS=0` to
 force the platform default.
 
-Duplicated verbatim in all three em-* repos, which are separate git repos and must
-stay independently testable — a shared copy would mean a test-time import across the
+The *code* below is duplicated in all three em-* repos, which are separate git repos and
+must stay independently testable — a shared copy would mean a test-time import across the
 layering. Keep the copies in step.
 """
 

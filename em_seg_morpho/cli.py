@@ -68,7 +68,7 @@ import sys
 import time
 from datetime import datetime
 
-from em_blockrun import bundled_configs, load_config, start_dask
+from em_blockrun import bundled_configs, load_config
 
 from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from em_seg_morpho.metrics_db import MetricsDB
@@ -558,6 +558,10 @@ def _main(args) -> int:
         log.info("serial mode: no dask client")
         run_all(None)
     else:
+        # Imported here, not at module scope: it pulls in dask.distributed (~1 s), which
+        # `progress` and `run-report` never need.
+        from em_blockrun import start_dask
+
         # Keep workers x cores within your QOS CPU cap.
         with start_dask(args.workers, _configs(args), label="em-morpho",
                         effective_config_path=work) as client:
