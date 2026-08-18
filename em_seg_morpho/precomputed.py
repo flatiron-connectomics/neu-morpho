@@ -32,6 +32,12 @@ from typing import Sequence
 import numpy as np
 from em_volume_tools import exists, read_json, write_bytes, write_json
 
+# Lives in em-volume-tools, which owns a volume's `info`. Imported rather than wrapped so
+# there is one implementation, and re-exported here because this is where callers have
+# always found it — linking the subresources after the seg stage is this package's job
+# even though writing the `info` key is not.
+from em_volume_tools.ops.subresources import link_subresources  # noqa: F401
+
 from .config import MeshConfig
 
 # Written for every body, and declared in the skeleton ``info``. The binary must
@@ -160,57 +166,6 @@ def volume_exists(volume_dir: str) -> bool:
     that has outlived the data it describes (see the CLI's resume guard).
     """
     return exists(volume_dir, "info")
-
-
-def link_subresources(volume_dir: str, *, mesh: str | None = None,
-                      skeletons: str | None = None,
-                      segment_properties: str | None = None) -> dict:
-    """Point a precomputed segmentation volume's ``info`` at its subdirectories.
-
-    Per the precomputed spec, a segmentation volume's ``info`` may carry ``mesh``,
-    ``skeletons`` and ``segment_properties`` keys, each **naming a subdirectory**
-    of the volume root. With them set, one neuroglancer layer shows the labels,
-    their meshes and their skeletons together; without them the meshes and
-    skeletons are separate sources the viewer has no reason to associate.
-
-    Each named subresource must exist and carry the right ``@type`` — pointing
-    the volume at the wrong directory fails silently in the viewer, so it is
-    checked here instead. Returns the keys that were set.
-
-    Existence is tested by reading ``<sub>/info``, not by listing a directory:
-    object stores have no directories, and the subresource's own ``info`` is the
-    thing that actually has to be there for the viewer.
-    """
-    expected = {"mesh": "neuroglancer_multilod_draco",
-                "skeletons": "neuroglancer_skeletons"}
-    info = read_json(volume_dir, "info")
-    if info is None:
-        raise FileNotFoundError(f"no precomputed 'info' at {volume_dir}")
-    if info.get("type") != "segmentation":
-        raise ValueError(f"{volume_dir}/info is not a segmentation volume "
-                         f"(type={info.get('type')!r}); mesh/skeletons do not apply")
-
-    changed: dict[str, str] = {}
-    for key, sub in (("mesh", mesh), ("skeletons", skeletons),
-                     ("segment_properties", segment_properties)):
-        if sub is None:
-            continue
-        sub_info = read_json(volume_dir, sub, "info")
-        if sub_info is None:
-            raise FileNotFoundError(
-                f"info would point {key!r} at {sub!r}, but {volume_dir}/{sub}/info "
-                f"does not exist")
-        want = expected.get(key)
-        if want and sub_info.get("@type") != want:
-            raise ValueError(f"{sub}/info has @type {sub_info.get('@type')!r}, "
-                             f"expected {want!r} for the {key!r} key")
-        info[key] = sub
-        changed[key] = sub
-
-    # A single kvstore write; no tmp+rename dance, because both the file driver
-    # and object stores make an individual key write atomic.
-    write_json(volume_dir, info, "info")
-    return changed
 
 
 def _check_vertex_attributes(attrs: Sequence[dict]) -> None:
