@@ -19,14 +19,14 @@ jobs:
         shell: bash -el {0}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Sibling packages, not on PyPI. Both are public, so no token is needed.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: flatiron-connectomics/em-blockrun
           path: .siblings/em-blockrun
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: flatiron-connectomics/em-volume-tools
           path: .siblings/em-volume-tools
