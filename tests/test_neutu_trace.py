@@ -16,7 +16,7 @@ import heapq
 import numpy as np
 import pytest
 
-from em_seg_morpho import neutu_trace
+from neu_morpho import neutu_trace
 
 
 def _tube(length=40, r=3, pad=4, bend=False):

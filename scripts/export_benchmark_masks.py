@@ -60,9 +60,9 @@ def main() -> int:
     ap.add_argument("--overwrite", action="store_true")
     a = ap.parse_args()
 
-    from em_seg_morpho.scales import read_scales, scale_spec
-    from em_volume_tools.backends.base import open_backend
-    from em_volume_tools.logs import quiet_store_logs
+    from neu_morpho.scales import read_scales, scale_spec
+    from neu_vol.backends.base import open_backend
+    from neu_vol.logs import quiet_store_logs
 
     with open(a.manifest) as f:
         man = json.load(f)

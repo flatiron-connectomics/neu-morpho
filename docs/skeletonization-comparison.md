@@ -15,8 +15,8 @@ report used to wrap these; it ranked methods by **fill %**, which the Correction
 below establish as not a score, so it was deleted rather than left to mislead — see
 `docs/skeletonization-plan.md` "Removed".
 
-Reusable code: `em_seg_morpho/neutu_io.py`, `em_seg_morpho/skelmetrics.py`,
-`em_seg_morpho/neutu_trace.py`, and under `scripts/`,
+Reusable code: `neu_morpho/neutu_io.py`, `neu_morpho/skelmetrics.py`,
+`neu_morpho/neutu_trace.py`, and under `scripts/`,
 `pick_benchmark_bodies.py` → `export_benchmark_masks.py` → `run_skel_benchmark.py`
 (the benchmark pipeline) plus `compare_skeletons_visual.py`.
 
@@ -296,7 +296,7 @@ Recorded so they are not re-derived.
 Built in a separate conda env (`managed_neutu`); it cannot be installed alongside
 this package — the conda recipe pins hdf5 1.8.18, jansson 2.7, libpng 1.6.28 and
 libdvid-cpp, and the SWIG bindings predate Python 3.12. Shell out instead; see
-`em_seg_morpho.neutu_io.run_neutu`.
+`neu_morpho.neutu_io.run_neutu`.
 
 ```
 neutu --command --config cfg.json body.sobj --skeletonize

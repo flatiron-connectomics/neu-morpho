@@ -17,7 +17,7 @@ the same flip for skeletons. Get it wrong and skeletons come out mirrored throug
 the z=x diagonal relative to their meshes — the same class of bug as the dropped
 crop origin (see coords.py).
 
-**Every write here goes through em-volume-tools' kvstore helpers**, never
+**Every write here goes through neu-vol' kvstore helpers**, never
 ``open()``, so ``output_dir`` may equally be a local path or an ``s3://`` URL.
 vol2mesh makes this possible by separating encoding from writing: we use
 ``multires.build_info`` / ``encode_multilod_object``, which return a dict and
@@ -30,13 +30,13 @@ from __future__ import annotations
 from typing import Sequence
 
 import numpy as np
-from em_volume_tools import exists, read_json, write_bytes, write_json
+from neu_vol import exists, read_json, write_bytes, write_json
 
-# Lives in em-volume-tools, which owns a volume's `info`. Imported rather than wrapped so
+# Lives in neu-vol, which owns a volume's `info`. Imported rather than wrapped so
 # there is one implementation, and re-exported here because this is where callers have
 # always found it — linking the subresources after the seg stage is this package's job
 # even though writing the `info` key is not.
-from em_volume_tools.ops.subresources import link_subresources  # noqa: F401
+from neu_vol.ops.subresources import link_subresources  # noqa: F401
 
 from .config import MeshConfig
 

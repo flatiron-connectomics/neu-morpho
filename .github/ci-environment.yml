@@ -1,4 +1,4 @@
-# Conda environment for CI. Mirrors the shared `em-lib` environment, scoped to what
+# Conda environment for CI. Mirrors the shared `neu-env` environment, scoped to what
 # this package's test suite needs.
 #
 # Why conda and not pip: `vol2mesh` and `dvidutils` are **conda-only**, from the
@@ -10,7 +10,7 @@
 # against conda's libraries, and mixing a pip-built numpy under it invites an ABI
 # mismatch that surfaces as a segfault rather than an import error. Only the
 # pure-Python packages that conda-forge does not carry are left to pip.
-name: em-seg-morpho-ci
+name: neu-morpho-ci
 
 channels:
   - flyem-forge   # vol2mesh, dvidutils
@@ -20,13 +20,13 @@ dependencies:
   - python=3.12
   - pip
 
-  # orchestration (em-blockrun)
+  # orchestration (blockrun)
   - dask
   - distributed
   - dask-jobqueue>=0.8
   - pyyaml
 
-  # volume I/O (em-volume-tools)
+  # volume I/O (neu-vol)
   - numpy>=2
   - scipy
   - tensorstore>=0.1.70
@@ -36,7 +36,7 @@ dependencies:
   - tifffile
   - imageio
 
-  # meshes / skeletons (em-seg-morpho)
+  # meshes / skeletons (neu-morpho)
   - vol2mesh
   - dvidutils
   - trimesh

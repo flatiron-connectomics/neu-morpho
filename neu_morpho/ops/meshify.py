@@ -1,10 +1,10 @@
-"""Block-first, two-stage meshing orchestrated with em-blockrun.
+"""Block-first, two-stage meshing orchestrated with blockrun.
 
     stage 1 "chunk"    : block_map over non-empty blocks  -> per-(body,block) fragments
     stage 2 "assemble" : block_map over bodies (from fragments) -> multires meshes
 
 One manifest, two groups ("chunk" keyed by block index, "assemble" keyed by body
-id — the generalized em-blockrun keys). Resume skips done blocks/bodies; running
+id — the generalized blockrun keys). Resume skips done blocks/bodies; running
 only stage 2 reuses fragments on disk (mesh-n-bone's ``reuse_existing_chunked``).
 
 Scale handling is the caller's: pass ``seg_spec`` opened at the meshing scale and
@@ -19,7 +19,7 @@ import logging
 import os
 from typing import Any, Sequence
 
-from em_blockrun import Manifest, block_map, iter_blocks
+from blockrun import Manifest, block_map, iter_blocks
 
 from ..allowlist import load_allowlist
 from ..config import MeshConfig, OutputConfig
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, mesh_cfg: MeshConfig,
                  allow: set[int] | None, mesh_voxel_size: Sequence[float]) -> tuple:
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     seg = open_backend(seg_spec).read_region(block.region)      # one block at the mesh scale
     meshes = mesh_block(seg, physical_box(block.region, mesh_voxel_size), mesh_cfg, allow)
@@ -105,7 +105,7 @@ def meshify(
     failures stop looking incidental; 0 disables it. A systemic error
     (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     mesh_cfg = mesh_cfg or MeshConfig()
     allow = load_allowlist(allowlist)

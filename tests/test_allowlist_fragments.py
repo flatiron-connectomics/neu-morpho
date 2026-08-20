@@ -2,8 +2,8 @@ import os
 
 import pytest
 
-from em_seg_morpho.allowlist import load_allowlist
-from em_seg_morpho import fragments as F
+from neu_morpho.allowlist import load_allowlist
+from neu_morpho import fragments as F
 
 
 def test_load_allowlist_none_means_all():

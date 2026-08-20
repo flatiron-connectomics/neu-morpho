@@ -35,7 +35,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from em_seg_morpho import neutu_io, skelmetrics          # noqa: E402
+from neu_morpho import neutu_io, skelmetrics          # noqa: E402
 
 NEUTU_BIN = os.path.expanduser("~/miniforge3/envs/managed_neutu/bin/neutu")
 
@@ -70,13 +70,13 @@ def run_one(rec: dict, out_dir: str, voxel_nm: float, neutu_bin: str,
         res["methods"][f"neutu_L{minlen}"] = {"error": f"{type(e).__name__}: {e}",
                                               "seconds": round(time.time() - t0, 1)}
 
-    # -- the Python port (em_seg_morpho.neutu_trace) -----------------------
+    # -- the Python port (neu_morpho.neutu_trace) -----------------------
     if port:
         npz = os.path.join(out_dir, "port", f"b{body}_port.npz")
         os.makedirs(os.path.dirname(npz), exist_ok=True)
         t0 = time.time()
         try:
-            from em_seg_morpho import neutu_trace
+            from neu_morpho import neutu_trace
 
             s = neutu_trace.skeletonize(mask, **(port_kw or {}))
             v = np.asarray(s.vertices, dtype=float)
@@ -99,7 +99,7 @@ def run_one(rec: dict, out_dir: str, voxel_nm: float, neutu_bin: str,
                              ("port_simplified", "simplify")):
                 t1 = time.time()
                 try:
-                    from em_seg_morpho import swc_simplify
+                    from neu_morpho import swc_simplify
 
                     sv, sr, se = getattr(swc_simplify, fn)(v, rad, e)
                     out = os.path.join(out_dir, "port", f"b{body}_{fn}.npz")
@@ -181,7 +181,7 @@ def main() -> int:
     ap.add_argument("--no-kimimaro", action="store_true",
                     help="skip kimimaro — it is by far the slow half")
     ap.add_argument("--no-port", action="store_true",
-                    help="skip em_seg_morpho.neutu_trace")
+                    help="skip neu_morpho.neutu_trace")
     ap.add_argument("--port-scale", type=float, default=None,
                     help="invalidation scale for the port (default: NeuTu's 1.0)")
     ap.add_argument("--port-const", type=float, default=None,

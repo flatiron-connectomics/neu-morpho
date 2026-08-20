@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "em-seg-morpho"
+name = "neu-morpho"
 version = "0.1.0"
 description = "Segment morphology: multi-resolution Draco meshes and skeletons from segmentation volumes, into neuroglancer-precomputed."
 readme = "README.md"
@@ -29,20 +29,20 @@ dependencies = [
     "osteoid",         # Skeleton class, split out of kimimaro
     "DracoPy",         # Draco codec binding used by vol2mesh.multires
     "trimesh",         # vol2mesh.multires LOD slicing (trim_mesh_to_box)
-    "em-volume-tools", # segmentation-array I/O
-    "em-blockrun",     # dask/SLURM chunked-map substrate
+    "neu-vol", # segmentation-array I/O
+    "blockrun",     # dask/SLURM chunked-map substrate
 ]
 
 [project.scripts]
-em-morpho = "em_seg_morpho.cli:main"
+neu-morpho = "neu_morpho.cli:main"
 
 [project.optional-dependencies]
-# Viewing published output: scripts/view_body_3d.py. em_seg_morpho.readback, which
+# Viewing published output: scripts/view_body_3d.py. neu_morpho.readback, which
 # does the actual reading, needs nothing beyond the core deps — only the rendering
 # is optional.
 viz = ["plotly"]  # self-contained interactive 3D HTML
-# The comparison harness (em_seg_morpho/skelcompare.py, scripts/compare_skeletons*).
-# plotly is repeated rather than pulled in via a self-referential `em-seg-morpho[viz]`
+# The comparison harness (neu_morpho/skelcompare.py, scripts/compare_skeletons*).
+# plotly is repeated rather than pulled in via a self-referential `neu-morpho[viz]`
 # extra: the two groups are installed independently and this project installs with
 # `pip install --no-deps`, so nothing resolves extras here anyway. Keep the two
 # entries in step if either is ever version-pinned.
@@ -54,8 +54,8 @@ compare = [
 dev = ["pytest"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["em_seg_morpho"]
-# No dask config data here: the templates live in em-blockrun, next to start_dask,
+packages = ["neu_morpho"]
+# No dask config data here: the templates live in blockrun, next to start_dask,
 # and `--config dask-local` resolves through it. Site-specific configs stay out of the
 # repo entirely — the top-level `configs/` is gitignored.
 

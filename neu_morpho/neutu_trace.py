@@ -59,7 +59,7 @@ version to port.
 Licence
 -------
 ``kimimaro`` and ``dijkstra3d`` are GPL-3.0-or-later and are imported here, as
-they already are elsewhere in this package — so em-seg-morpho is a GPL-combined
+they already are elsewhere in this package — so neu-morpho is a GPL-combined
 work and must be distributed under GPL-3.0-or-later. No kimimaro source is
 copied.
 """

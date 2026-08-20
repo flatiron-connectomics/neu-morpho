@@ -24,12 +24,12 @@ jobs:
       # Sibling packages, not on PyPI. Both are public, so no token is needed.
       - uses: actions/checkout@v7
         with:
-          repository: flatiron-connectomics/em-blockrun
-          path: .siblings/em-blockrun
+          repository: flatiron-connectomics/blockrun
+          path: .siblings/blockrun
       - uses: actions/checkout@v7
         with:
-          repository: flatiron-connectomics/em-volume-tools
-          path: .siblings/em-volume-tools
+          repository: flatiron-connectomics/neu-vol
+          path: .siblings/neu-vol
 
       - uses: mamba-org/setup-micromamba@v2
         with:
@@ -41,7 +41,7 @@ jobs:
         # binaries (tensorstore, h5py, numpy) from PyPI and invites the ABI mismatch
         # the environment file exists to avoid.
         run: |
-          pip install --no-deps ./.siblings/em-blockrun ./.siblings/em-volume-tools
+          pip install --no-deps ./.siblings/blockrun ./.siblings/neu-vol
           pip install --no-deps -e .
 
       - name: Show what actually got installed
@@ -53,8 +53,8 @@ jobs:
         run: |
           python -c "
           import importlib
-          for m in ('vol2mesh', 'dvidutils', 'kimimaro', 'tensorstore', 'em_blockrun',
-                    'em_volume_tools', 'em_seg_morpho'):
+          for m in ('vol2mesh', 'dvidutils', 'kimimaro', 'tensorstore', 'blockrun',
+                    'neu_vol', 'neu_morpho'):
               try:
                   importlib.import_module(m); print(f'  ok      {m}')
               except Exception as e:
@@ -69,7 +69,7 @@ jobs:
           pip install build
           python -m build --wheel -o dist/
           pip install --force-reinstall --no-deps dist/*.whl
-          cd /tmp && em-morpho --help > /dev/null && echo "em-morpho runs outside a checkout"
+          cd /tmp && neu-morpho --help > /dev/null && echo "neu-morpho runs outside a checkout"
 
   # Ask the documentation site to rebuild, so the published CLI reference follows this
   # commit. `main` only, and only once the tests pass: the reference is generated from
@@ -80,11 +80,11 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Rebuild flatiron-connectomics/em-libraries
+      - name: Rebuild flatiron-connectomics/neu-suite
         env:
           # The workflow's own GITHUB_TOKEN is scoped to THIS repository and cannot
           # dispatch to another one, so this needs a separate token with contents:write
-          # on em-libraries. When it is absent the step says so and succeeds — a docs
+          # on neu-suite. When it is absent the step says so and succeeds — a docs
           # refresh that did not happen must not turn a green test run red, and the
           # site rebuilds on its nightly schedule regardless.
           TOKEN: ${{ secrets.DOCS_DISPATCH_TOKEN }}
@@ -97,6 +97,6 @@ jobs:
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/flatiron-connectomics/em-libraries/dispatches \
+            https://api.github.com/repos/flatiron-connectomics/neu-suite/dispatches \
             -d "{\"event_type\":\"package-updated\",\"client_payload\":{\"repo\":\"$GITHUB_REPOSITORY\",\"sha\":\"$GITHUB_SHA\"}}"
-          echo "::notice::asked em-libraries to rebuild its docs for $GITHUB_SHA"
+          echo "::notice::asked neu-suite to rebuild its docs for $GITHUB_SHA"

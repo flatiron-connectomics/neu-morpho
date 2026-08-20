@@ -1,11 +1,11 @@
-# em-seg-morpho — Design
+# neu-morpho — Design
 
 Generate per-body **meshes** and **skeletons** from a segmentation volume, in
-neuroglancer-precomputed format. Reuses `em-blockrun` (dask local/SLURM +
-resumable manifest) and `em-volume-tools` (segmentation-array I/O). Meshes via
+neuroglancer-precomputed format. Reuses `blockrun` (dask local/SLURM +
+resumable manifest) and `neu-vol` (segmentation-array I/O). Meshes via
 `vol2mesh`, skeletons via `kimimaro`.
 
-Kept separate from `em-volume-tools` because meshing brings heavy, orthogonal
+Kept separate from `neu-vol` because meshing brings heavy, orthogonal
 deps. Motivation vs. the older mesh-n-bone: its CGAL mesh/skeleton path **drops
 disconnected components → false body splits**; vol2mesh + kimimaro capture full
 bodies (all components).
@@ -28,7 +28,7 @@ group `"assemble"`, key = body id): gather a body's fragments, `concatenate_mesh
 `multires.write_object_mesh`.
 
 One manifest, two groups (block-index tuples vs. scalar body ids — the generalized
-em-blockrun keys). Resume skips done blocks/bodies; running only stage 2 reuses
+blockrun keys). Resume skips done blocks/bodies; running only stage 2 reuses
 fragments on disk (mesh-n-bone's `reuse_existing_chunked`).
 
 **Occupancy prefilter** (`occupancy.py`): read a coarse scale once and skip empty
@@ -66,7 +66,7 @@ prevents it, verified by `tests/test_alignment.py`:
 
 ## Skeletons — block-first, two-stage (`ops/skeletonize_segments.py`)
 
-**`em_seg_morpho.neutu_trace` is the default skeletonizer** (`SkeletonConfig.tracer
+**`neu_morpho.neutu_trace` is the default skeletonizer** (`SkeletonConfig.tracer
 = "neutu"`), a reimplementation of NeuTu's TEASAR that it matches to sub-voxel
 centreline agreement; see `docs/skeletonization-plan.md`. **kimimaro** — the
 previous default, and still what `neutu_trace` builds its primitives on — remains
@@ -249,10 +249,10 @@ the "need a body's bbox before we can crop it" dependency.
   `postprocess_tick_nm` (all in nm, since vertices are nm).
 - `OutputConfig`.
 
-## Running a job (`em-morpho run` / `em_seg_morpho/cli.py`)
+## Running a job (`neu-morpho run` / `neu_morpho/cli.py`)
 
 One driver runs `index -> allowlist -> mesh -> skel` (`--stages` picks a subset)
-against a dask cluster from `em_blockrun.start_dask`, or in-process with
+against a dask cluster from `blockrun.start_dask`, or in-process with
 `--serial`. See the README for invocations.
 
 - **ROI (`roi.py`)** — `--roi z0,y0,x0,z1,y1,x1` filters blocks of the **global**
@@ -315,7 +315,7 @@ surface, the skeleton as conical frusta whose end radii are the stored per-verte
 radii, each toggleable from the legend. Reading the published artefact rather than an
 intermediate is the point; it is the only check that covers the encode step.
 
-The reading and geometry are in **`em_seg_morpho/readback.py`** — `read_body_skeleton`,
+The reading and geometry are in **`neu_morpho/readback.py`** — `read_body_skeleton`,
 `read_body_mesh`, `frustum_mesh` — the inverse of `precomputed.py`, which only writes.
 It lives there rather than in `precomputed.py` because that module is forbidden from
 importing `os` or calling `open()` (the guard that keeps s3 destinations from silently
@@ -359,7 +359,7 @@ would refuse legitimate runs constantly, and the `--resume` flag needed to placa
 it would end up in every sbatch script — passing silently in exactly the case that
 matters. Agreement between manifest and destination fires only on the hazard.
 
-The `seg` stage (`ops/export_roi_seg`, wrapping `em_volume_tools.extract_roi`)
+The `seg` stage (`ops/export_roi_seg`, wrapping `neu_vol.extract_roi`)
 copies the ROI's labels into that volume. It exports the **block-aligned** region,
 matching what was actually meshed, and — the load-bearing part — the copy carries
 `voxel_offset` so neuroglancer places it at its true global position. Without that
@@ -426,10 +426,10 @@ fragments" from "it had 4 but one block died". A crash you notice; a truncated
 neuron you may not. Resume already makes relaunching a chunk run cheap: progress
 is recorded per block as results stream back, so only in-flight work is lost.
 
-(This differs from em-volume-tools' conversion, where each block writes an
+(This differs from neu-vol' conversion, where each block writes an
 independent output chunk and isolation is straightforwardly safe. The difference
 is the aggregating second stage, which is why the question was deferred from
-em-blockrun rather than answered there.)
+blockrun rather than answered there.)
 
 **The resume trap.** `Manifest.is_done` tests key *presence*, so a recorded
 `failed` reads as done and would never be retried — the tasks most needing a
@@ -482,8 +482,8 @@ manifest are written in a `finally` — the diagnostics matter most when it abor
 - Scale/voxel-size wiring: caller passes `seg_spec` at the meshing scale +
   `occupancy_spec` at a coarse scale, with voxel sizes — keeps the op
   format-agnostic. Could auto-derive from source metadata later.
-- **`Manifest.is_done` still treats `failed` as done** in em-blockrun itself. We
-  work around it locally with `_progress.is_complete`, but em-blockrun's own
+- **`Manifest.is_done` still treats `failed` as done** in blockrun itself. We
+  work around it locally with `_progress.is_complete`, but blockrun's own
   docstring invites a `failed` status, so the next consumer will hit the same
   trap. Worth fixing upstream (an `ignore_statuses` argument) rather than in each
   caller.
@@ -491,7 +491,7 @@ manifest are written in a `finally` — the diagnostics matter most when it abor
 ## Module layout
 
 ```
-em_seg_morpho/
+neu_morpho/
 ├── config.py         # MeshConfig / SkeletonConfig / OutputConfig
 ├── allowlist.py      # load body allowlist (or None = all)
 ├── occupancy.py      # coarse-scale -> non-empty block indices
@@ -505,13 +505,13 @@ em_seg_morpho/
 ├── scales.py         # per-level shape + true voxel size from source metadata
 ├── skelcompare.py    # skeletonization comparison harness (kimimaro vs skeletor) + 3D viz
 └── ops/
-    ├── meshify.py              # two-stage meshing orchestration via em-blockrun
+    ├── meshify.py              # two-stage meshing orchestration via blockrun
     ├── skeletonize_segments.py # two-stage skeletonization (skel-chunk / skel-fuse)
     ├── index_segments.py       # parallel scan -> per-body metrics DB (bbox/count)
     └── _progress.py            # per-group manifest tallies
 
-    ├── cli.py                  # the `em-seg-morpho` command: index -> mesh -> skel
-    ├── __main__.py             # so `python -m em_seg_morpho` is the same thing
+    ├── cli.py                  # the `neu-morpho` command: index -> mesh -> skel
+    ├── __main__.py             # so `python -m neu_morpho` is the same thing
     └── configs/                # bundled dask configs (package DATA, shipped)
         dask-local.yaml         #   the default
         dask-slurm-example.yaml #   a template — copy and edit for your site

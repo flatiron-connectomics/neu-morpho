@@ -8,9 +8,9 @@ manifest entries from a trial ROI are reused, not redone.
 import numpy as np
 import pytest
 
-from em_blockrun import iter_blocks
+from blockrun import iter_blocks
 
-from em_seg_morpho import roi as R
+from neu_morpho import roi as R
 
 
 # --------------------------------------------------------------------------- #
@@ -81,8 +81,8 @@ def test_scale_roi_covers_the_same_physical_region():
 # ROI through the real ops
 # --------------------------------------------------------------------------- #
 def _write_seg_zarr(path, vol):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
@@ -101,8 +101,8 @@ def _two_body_volume():
 
 def test_roi_restricts_skeletonization_then_extends_on_resume(tmp_path):
     """The payoff: widening the ROI later reuses the first run's work."""
-    from em_seg_morpho.config import OutputConfig, SkeletonConfig
-    from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
+    from neu_morpho.config import OutputConfig, SkeletonConfig
+    from neu_morpho.ops.skeletonize_segments import skeletonize_segments
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -140,10 +140,10 @@ def test_a_manifest_outliving_its_output_is_refused_not_silently_skipped(tmp_pat
 
     import pytest
 
-    from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-    from em_seg_morpho.ops._progress import StaleManifest
-    from em_seg_morpho.ops.meshify import meshify
-    from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
+    from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
+    from neu_morpho.ops._progress import StaleManifest
+    from neu_morpho.ops.meshify import meshify
+    from neu_morpho.ops.skeletonize_segments import skeletonize_segments
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
     work = str(tmp_path / "out")
@@ -190,8 +190,8 @@ def test_guard_allows_a_first_run_and_an_ordinary_resume(tmp_path):
     """
     import os
 
-    from em_seg_morpho.config import MeshConfig, OutputConfig
-    from em_seg_morpho.ops.meshify import meshify
+    from neu_morpho.config import MeshConfig, OutputConfig
+    from neu_morpho.ops.meshify import meshify
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"),
@@ -206,8 +206,8 @@ def test_guard_allows_a_first_run_and_an_ordinary_resume(tmp_path):
 
 
 def test_roi_restricts_index_scan(tmp_path):
-    from em_seg_morpho.metrics_db import MetricsDB
-    from em_seg_morpho.ops.index_segments import index_segments
+    from neu_morpho.metrics_db import MetricsDB
+    from neu_morpho.ops.index_segments import index_segments
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _two_body_volume())
     db_path = str(tmp_path / "m.db")
@@ -231,7 +231,7 @@ def test_read_scales_from_precomputed_info(tmp_path):
     """
     import json
 
-    from em_seg_morpho.scales import read_scales, scale_spec
+    from neu_morpho.scales import read_scales, scale_spec
 
     root = tmp_path / "seg.precomputed"
     root.mkdir()
@@ -261,7 +261,7 @@ def test_read_scales_from_precomputed_info(tmp_path):
 
 
 def test_read_scales_rejects_sources_without_metadata(tmp_path):
-    from em_seg_morpho.scales import read_scales
+    from neu_morpho.scales import read_scales
 
     bare = tmp_path / "nothing"
     bare.mkdir()

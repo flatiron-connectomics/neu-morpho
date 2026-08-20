@@ -1,13 +1,13 @@
-"""Point-in-time progress for a detached em-morpho run.
+"""Point-in-time progress for a detached neu-morpho run.
 
 Reads the work dir only — the JSONL manifests, ``run_plan.json`` and the fragment
 stores. **It never contacts the dask cluster, S3, or SLURM**, so it is cheap and
 safe to run as often as you like from any terminal:
 
-    em-morpho progress /mnt/ceph/users/<you>/morpho-run
+    neu-morpho progress /mnt/ceph/users/<you>/morpho-run
 
     # measure a rate and extrapolate, by sampling the manifests twice
-    em-morpho progress <work-dir> --sample 60
+    neu-morpho progress <work-dir> --sample 60
 
 Denominators come from ``run_plan.json``, which the CLI writes at startup
 (ROI ∩ occupancy block counts, which are expensive to re-derive because they need
@@ -44,7 +44,7 @@ STAGE_GROUPS = {
              ("skel-fuse", "body", None, "skel_chunked")],
 }
 # Statuses that mean the task is finished and will not be retried. "failed" is
-# deliberately excluded: em-blockrun's is_done tests key presence, so a resumed run
+# deliberately excluded: blockrun's is_done tests key presence, so a resumed run
 # retries failures (see ops/_progress.is_complete).
 DONE = ("written", "empty", "dust", "skipped")
 

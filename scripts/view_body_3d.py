@@ -14,7 +14,7 @@ does not fit inside the mesh is visible as the tube poking through the surface.
 
 Mesh and skeleton are separate traces: click either legend entry to toggle it.
 
-Reading and geometry live in ``em_seg_morpho.readback``; this script is only the
+Reading and geometry live in ``neu_morpho.readback``; this script is only the
 plotly presentation and the CLI. Needs plotly — ``pip install -e '.[viz]'``.
 """
 
@@ -27,7 +27,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from em_seg_morpho.readback import (                              # noqa: E402
+from neu_morpho.readback import (                              # noqa: E402
     frustum_mesh, read_body_mesh, read_body_skeleton)
 
 # Palette slots 1 and 2 of the validated categorical ramp: a colourblind-safe pair.

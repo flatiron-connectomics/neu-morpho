@@ -2,10 +2,10 @@
 
 
 def test_package_modules_import():
-    import em_seg_morpho
-    from em_seg_morpho import config, mesh, precomputed, skeleton, occupancy, fragments, allowlist
-    from em_seg_morpho.ops import meshify
-    assert em_seg_morpho.__version__
+    import neu_morpho
+    from neu_morpho import config, mesh, precomputed, skeleton, occupancy, fragments, allowlist
+    from neu_morpho.ops import meshify
+    assert neu_morpho.__version__
     assert config.MeshConfig().mesh_scale == 2      # default meshing scale (not 0)
     assert callable(meshify)
 
@@ -22,6 +22,6 @@ def test_toolchain_block_first_primitives():
 
 
 def test_shared_packages_available():
-    import em_blockrun, em_volume_tools  # noqa: F401
-    from em_blockrun import block_map, Manifest, iter_blocks  # noqa: F401
-    assert em_blockrun.__version__ and em_volume_tools.__version__
+    import blockrun, neu_vol  # noqa: F401
+    from blockrun import block_map, Manifest, iter_blocks  # noqa: F401
+    assert blockrun.__version__ and neu_vol.__version__

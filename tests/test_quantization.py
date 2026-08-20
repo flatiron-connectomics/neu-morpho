@@ -10,8 +10,8 @@ guard computes it rather than trusting a constant.
 import numpy as np
 import pytest
 
-from em_seg_morpho.config import MeshConfig, OutputConfig
-from em_seg_morpho.precomputed import (VALID_QUANTIZATION_BITS, check_quantization,
+from neu_morpho.config import MeshConfig, OutputConfig
+from neu_morpho.precomputed import (VALID_QUANTIZATION_BITS, check_quantization,
                                        quantization_step_nm)
 
 
@@ -59,9 +59,9 @@ def test_deep_pyramids_are_caught_even_at_16_bits():
 
 def test_meshify_checks_before_doing_any_work(tmp_path):
     """The guard must fire up front, not after an hour of block meshing."""
-    from em_seg_morpho.ops.meshify import meshify
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_morpho.ops.meshify import meshify
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:28, 4:28, 4:28] = 1

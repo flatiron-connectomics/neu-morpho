@@ -26,7 +26,7 @@ import tempfile
 
 import numpy as np
 
-from em_volume_tools import location
+from neu_vol import location
 
 __all__ = ["read_body_skeleton", "read_body_mesh", "frustum_mesh"]
 

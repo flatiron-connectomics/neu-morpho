@@ -1,6 +1,6 @@
 import numpy as np
 
-from em_seg_morpho.occupancy import occupied_blocks
+from neu_morpho.occupancy import occupied_blocks
 
 
 def _occ():

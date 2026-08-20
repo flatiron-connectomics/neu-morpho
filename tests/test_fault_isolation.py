@@ -14,14 +14,14 @@ import os
 import numpy as np
 import pytest
 
-from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-from em_seg_morpho.ops import meshify, skeletonize_segments
-from em_seg_morpho.ops._progress import FAILED, guarded, is_complete
+from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
+from neu_morpho.ops import meshify, skeletonize_segments
+from neu_morpho.ops._progress import FAILED, guarded, is_complete
 
 
 def _write_seg_zarr(path, vol):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
@@ -50,10 +50,10 @@ MESH_CFG = dict(mesh_scale=0, block_shape=(16, 16, 16), num_lods=2, decimation_f
 def test_is_complete_excludes_failed_where_is_done_does_not(tmp_path):
     """A 'failed' record must be retried, not treated as done.
 
-    em-blockrun's Manifest.is_done tests key PRESENCE, so resuming on is_done
+    blockrun's Manifest.is_done tests key PRESENCE, so resuming on is_done
     would permanently skip exactly the tasks that need retrying.
     """
-    from em_blockrun import Manifest
+    from blockrun import Manifest
 
     path = str(tmp_path / "m.jsonl")
     m = Manifest(path)
@@ -87,7 +87,7 @@ def test_guarded_converts_exceptions_and_passes_success_through():
 # Stage 2 isolates
 # --------------------------------------------------------------------------- #
 def test_skeleton_fuse_failure_is_isolated_and_retried(tmp_path, monkeypatch):
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -126,7 +126,7 @@ def test_skeleton_fuse_failure_is_isolated_and_retried(tmp_path, monkeypatch):
 
 
 def test_mesh_assemble_failure_is_isolated_and_retried(tmp_path, monkeypatch):
-    mod = importlib.import_module("em_seg_morpho.ops.meshify")
+    mod = importlib.import_module("neu_morpho.ops.meshify")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -158,8 +158,8 @@ def test_mesh_assemble_failure_is_isolated_and_retried(tmp_path, monkeypatch):
 
 def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
     """A failed body must not leave half-written metrics behind."""
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
-    from em_seg_morpho.metrics_db import MetricsDB
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
+    from neu_morpho.metrics_db import MetricsDB
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -183,7 +183,7 @@ def test_failed_body_metrics_are_not_written(tmp_path, monkeypatch):
 def test_is_systemic_classification():
     import errno as E
 
-    from em_seg_morpho.ops._progress import is_systemic
+    from neu_morpho.ops._progress import is_systemic
 
     assert is_systemic(MemoryError())
     assert is_systemic(ImportError("no module"))
@@ -207,7 +207,7 @@ def test_guarded_flags_systemic_errors():
 
 
 def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
-    from em_seg_morpho.ops._progress import FailureBreaker, StageAborted
+    from neu_morpho.ops._progress import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=3)
     for i in range(2):
@@ -225,7 +225,7 @@ def test_breaker_trips_on_consecutive_failures_and_resets_on_success():
 
 
 def test_breaker_trips_immediately_on_systemic():
-    from em_seg_morpho.ops._progress import FailureBreaker, StageAborted
+    from neu_morpho.ops._progress import FailureBreaker, StageAborted
 
     b = FailureBreaker(max_consecutive=1000)
     b.failure(7, {"error": "MemoryError: ", "systemic": True})
@@ -234,7 +234,7 @@ def test_breaker_trips_immediately_on_systemic():
 
 
 def test_breaker_can_be_disabled():
-    from em_seg_morpho.ops._progress import FailureBreaker
+    from neu_morpho.ops._progress import FailureBreaker
 
     b = FailureBreaker(max_consecutive=0)
     for i in range(50):
@@ -245,8 +245,8 @@ def test_breaker_can_be_disabled():
 
 def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path, monkeypatch):
     """The breaker must not cost us the record of what already happened."""
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
-    from em_seg_morpho.ops._progress import StageAborted
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
+    from neu_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -265,14 +265,14 @@ def test_stage_aborts_after_consecutive_failures_but_keeps_diagnostics(tmp_path,
     assert len(rows) == 2 and "everything is broken" in rows[0]["error"]
 
     # and the failures are recorded as retryable, not as done
-    from em_blockrun import Manifest
+    from blockrun import Manifest
     m = Manifest(os.path.join(str(tmp_path / "out"), "progress.skel.jsonl")).load()
     assert not is_complete(m, "skel-fuse", rows[0]["body_id"])
 
 
 def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
-    from em_seg_morpho.ops._progress import StageAborted
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
+    from neu_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -291,9 +291,9 @@ def test_systemic_error_aborts_on_the_first_body(tmp_path, monkeypatch):
 
 def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monkeypatch):
     """A trip must not leave a body's skeleton on disk without its DB metrics."""
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
-    from em_seg_morpho.metrics_db import MetricsDB
-    from em_seg_morpho.ops._progress import StageAborted
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
+    from neu_morpho.metrics_db import MetricsDB
+    from neu_morpho.ops._progress import StageAborted
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -326,7 +326,7 @@ def test_successes_in_the_aborting_batch_still_get_their_metrics(tmp_path, monke
 def test_stage1_block_failure_still_aborts(tmp_path, monkeypatch):
     """Block failures must stay loud: stage 2 aggregates across blocks, so a
     silently skipped block yields a truncated body that still looks complete."""
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -341,7 +341,7 @@ def test_stage1_block_failure_still_aborts(tmp_path, monkeypatch):
 
 
 def test_stage1_mesh_block_failure_still_aborts(tmp_path, monkeypatch):
-    mod = importlib.import_module("em_seg_morpho.ops.meshify")
+    mod = importlib.import_module("neu_morpho.ops.meshify")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))
@@ -357,7 +357,7 @@ def test_stage1_mesh_block_failure_still_aborts(tmp_path, monkeypatch):
 
 def test_stage1_progress_before_an_abort_is_durable(tmp_path, monkeypatch):
     """A crash must not cost the blocks already recorded."""
-    mod = importlib.import_module("em_seg_morpho.ops.skeletonize_segments")
+    mod = importlib.import_module("neu_morpho.ops.skeletonize_segments")
 
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _three_body_volume())
     out = OutputConfig(dst=str(tmp_path / "out" / "segmentation"), work_dir=str(tmp_path / "out"))

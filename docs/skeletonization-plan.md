@@ -1,11 +1,11 @@
-# Plan: NeuTu-quality skeletons in em-seg-morpho
+# Plan: NeuTu-quality skeletons in neu-morpho
 
 Background and evidence: `docs/skeletonization-comparison.md`. Read that first —
 in particular the "Corrections" section, which lists conclusions already established
 as wrong.
 
 **Status. All five steps are done, at NeuTu's own parameter values.**
-`em_seg_morpho/neutu_trace.py` (tracing) plus `em_seg_morpho/swc_simplify.py`
+`neu_morpho/neutu_trace.py` (tracing) plus `neu_morpho/swc_simplify.py`
 (node reduction), scored by `skelmetrics.agreement` over the 12-body benchmark:
 
 | median ratio, port : NeuTu | |
@@ -63,7 +63,7 @@ for visualization. Two things have been re-scoped since this was written:
 
 **Two routes.** Preferred: reimplement NeuTu's method in Python. Fallback: shell out
 to the NeuTu binary from its own environment as an optional pipeline stage
-(`em_seg_morpho.neutu_io.run_neutu` already does this).
+(`neu_morpho.neutu_io.run_neutu` already does this).
 
 ---
 
@@ -102,7 +102,7 @@ NeuTu has neither — what remains is ~40 lines of orchestration around the C++
 primitives, which are *imported* either way. Reimplementing gets the same
 readable-and-pinned property with no upstream-drift obligation. It does not change
 the licence position: `kimimaro` and `dijkstra3d` are GPL-3.0-or-later and are
-imported regardless, so em-seg-morpho is a GPL-combined work.
+imported regardless, so neu-morpho is a GPL-combined work.
 
 ---
 
@@ -129,7 +129,7 @@ connected-component bug in step 1 that unit tests on synthetic tubes did not.
 
 ## Step 1 — NeuTu-style cost, everything else kimimaro ✅ done 2026-07-31
 
-`em_seg_morpho/neutu_trace.py`, with `tests/test_neutu_trace.py` (11 tests).
+`neu_morpho/neutu_trace.py`, with `tests/test_neutu_trace.py` (11 tests).
 
 The `parental_field` question the plan said to confirm rather than assume: **the
 per-voxel substitution is exact here.** Checked against an independent, slow
@@ -448,7 +448,7 @@ measurement was downstream of the same two defects.
 
 ## Fallback — the NeuTu plugin
 
-If steps 1–3 stall, `em_seg_morpho.neutu_io.run_neutu` is ready. Costs: a GPL binary
+If steps 1–3 stall, `neu_morpho.neutu_io.run_neutu` is ready. Costs: a GPL binary
 out of process, a second conda environment, per-body subprocess and file I/O, and the
 argument-order workaround. Parallelises fine per body (disBatch on Rusty).
 

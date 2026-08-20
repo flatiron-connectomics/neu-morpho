@@ -37,7 +37,7 @@ class ScaleInfo:
 
 def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
     """All pyramid levels of a source, finest first. Raises if metadata is absent."""
-    from em_volume_tools.source_metadata import detect_backend
+    from neu_vol.source_metadata import detect_backend
 
     spec = {"path": spec} if isinstance(spec, str) else dict(spec)
     kv = _kvstore(spec)
@@ -56,7 +56,7 @@ def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:
 
 def _kvstore(spec: Mapping[str, Any]) -> dict[str, Any]:
     """Directory kvstore for a spec (with a trailing slash, so keys append)."""
-    from em_volume_tools.location import spec_kvstore
+    from neu_vol.location import spec_kvstore
 
     kv = dict(spec_kvstore(spec))
     if "path" in kv and not str(kv["path"]).endswith("/"):
@@ -74,7 +74,7 @@ def _read_key(kv: Mapping[str, Any], key: str) -> bytes | None:
     process that has not otherwise bootstrapped (invariant 8). Same class of bug as the
     one already fixed in ``source_metadata._read_key``.
     """
-    from em_volume_tools.location import read_bytes
+    from neu_vol.location import read_bytes
 
     return read_bytes(kv, key)
 
@@ -96,7 +96,7 @@ def _precomputed_scales(kv: Mapping[str, Any]) -> list[ScaleInfo]:
 
 
 def _zarr_scales(kv: Mapping[str, Any]) -> list[ScaleInfo]:
-    from em_volume_tools.location import join
+    from neu_vol.location import join
 
     raw = _read_key(kv, "zarr.json")
     if raw is None:
@@ -135,8 +135,8 @@ def scale_spec(spec: str | Mapping[str, Any], scale_index: int) -> dict:
     coordinates you pass are then interpreted 4x too fine and read the wrong place
     entirely. That fails as empty data, not as an error.
     """
-    from em_volume_tools.source_metadata import detect_backend
-    from em_volume_tools.location import join
+    from neu_vol.source_metadata import detect_backend
+    from neu_vol.location import join
 
     spec = {"path": spec} if isinstance(spec, str) else dict(spec)
     kv = _kvstore(spec)

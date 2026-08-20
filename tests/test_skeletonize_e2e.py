@@ -11,14 +11,14 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from em_seg_morpho.config import OutputConfig, SkeletonConfig
-from em_seg_morpho.ops.skeletonize_segments import skeletonize_segments
-from em_seg_morpho.skeleton import fuse_body, skeletonize_block
+from neu_morpho.config import OutputConfig, SkeletonConfig
+from neu_morpho.ops.skeletonize_segments import skeletonize_segments
+from neu_morpho.skeleton import fuse_body, skeletonize_block
 
 
 def _write_seg_zarr(path, vol):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
@@ -113,7 +113,7 @@ def test_metrics_land_in_db(tmp_path):
     is then cleaned up. Production removes 94k of them over a 30-block ROI, 3.2% of
     cable. Assert against that order, not against postprocessing being off.
     """
-    from em_seg_morpho.metrics_db import MetricsDB
+    from neu_morpho.metrics_db import MetricsDB
 
     cfg = replace(_cfg(), postprocess_tick_nm=500.0)
     src = _write_seg_zarr(str(tmp_path / "seg.zarr"), _volume())
@@ -161,7 +161,7 @@ def test_resume_skips_done_and_stage2_reuses_fragments(tmp_path):
 
 def test_fuse_body_welds_seams_not_just_concatenates():
     """Guard the property the whole design rests on: fragments become one tree."""
-    from em_seg_morpho.skeleton import fuse_body, skeletonize_block
+    from neu_morpho.skeleton import fuse_body, skeletonize_block
 
     cfg = _cfg()
     vol = _volume()
@@ -191,7 +191,7 @@ def test_default_join_does_not_bridge_a_segmentation_split():
     produced, and inflating cable_length_nm for exactly the bodies whose
     segmentation is least trustworthy.
     """
-    from em_seg_morpho.skeleton import fuse_body, join_radius_nm, skeletonize_block
+    from neu_morpho.skeleton import fuse_body, join_radius_nm, skeletonize_block
 
     cfg = _cfg()
     assert join_radius_nm(cfg) == 16.0                  # 2 x 8 nm voxel
@@ -215,7 +215,7 @@ def test_default_join_does_not_bridge_a_segmentation_split():
 
 def test_join_radius_zero_defers_to_postprocess():
     """radius=0 skips the explicit join; postprocess's own join still welds seams."""
-    from em_seg_morpho.skeleton import fuse_body, skeletonize_block
+    from neu_morpho.skeleton import fuse_body, skeletonize_block
 
     cfg = replace(_cfg(), join_radius_nm=0)
     vol = _volume()
@@ -280,7 +280,7 @@ def test_remove_loops_breaks_the_edge_dtype():
     import kimimaro
     from kimimaro.post import remove_dust, remove_loops
 
-    from em_seg_morpho.skeleton import join_radius_nm, normalize_dtypes
+    from neu_morpho.skeleton import join_radius_nm, normalize_dtypes
 
     cfg = replace(_cfg(), postprocess_dust_nm=0.0, postprocess_tick_nm=1000.0)
     frags = [skeletonize_block(_volume()[z0:z0 + 32], (z0, 0, 0), cfg)[7]
@@ -309,7 +309,7 @@ def test_fuse_body_matches_kimimaro_postprocess():
     """
     import kimimaro
 
-    from em_seg_morpho.skeleton import (fuse_body, join_radius_nm, normalize_dtypes,
+    from neu_morpho.skeleton import (fuse_body, join_radius_nm, normalize_dtypes,
                                         skeletonize_block)
 
     cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=0.0)
@@ -339,7 +339,7 @@ def test_tick_removal_prunes_twigs():
 
 
 def test_fusion_stats_attribute_what_was_dropped():
-    from em_seg_morpho.skeleton import fusion_stats_summary
+    from neu_morpho.skeleton import fusion_stats_summary
 
     cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=1000.0)
     frags = _arbor_frags(cfg)

@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pytest
 
-from em_seg_morpho.precomputed import (SKELETON_VERTEX_ATTRIBUTES, encode_skeleton,
+from neu_morpho.precomputed import (SKELETON_VERTEX_ATTRIBUTES, encode_skeleton,
                                        write_body_skeleton, write_skeleton_info)
 
 
@@ -60,7 +60,7 @@ def test_declared_attributes_are_all_float32():
 
 
 def test_write_skeleton_info_rejects_non_float32_attributes(tmp_path):
-    from em_seg_morpho.precomputed import write_skeleton_info as w
+    from neu_morpho.precomputed import write_skeleton_info as w
 
     with pytest.raises(ValueError, match="must be float32"):
         w(str(tmp_path / "s"),
@@ -103,9 +103,9 @@ def test_mesh_and_skeleton_agree_after_encoding():
     from vol2mesh import Mesh
     from osteoid import Skeleton
 
-    from em_seg_morpho.coords import physical_box
-    from em_seg_morpho.config import SkeletonConfig
-    from em_seg_morpho.skeleton import skeletonize_block
+    from neu_morpho.coords import physical_box
+    from neu_morpho.config import SkeletonConfig
+    from neu_morpho.skeleton import skeletonize_block
 
     vs = (8.0, 8.0, 8.0)
     # asymmetric placement, so a z<->x swap cannot pass by accident
@@ -142,7 +142,7 @@ def test_precomputed_module_uses_no_direct_file_io():
     import ast
     import inspect
 
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     tree = ast.parse(inspect.getsource(precomputed))
 
@@ -170,10 +170,10 @@ def test_precomputed_module_uses_no_direct_file_io():
 
 def test_skeleton_and_mesh_info_land_via_kvstore(tmp_path):
     """The kvstore path produces exactly the same on-disk layout as before."""
-    from em_volume_tools import read_json
+    from neu_vol import read_json
 
-    from em_seg_morpho.config import MeshConfig
-    from em_seg_morpho.precomputed import (volume_exists, write_mesh_info,
+    from neu_morpho.config import MeshConfig
+    from neu_morpho.precomputed import (volume_exists, write_mesh_info,
                                            write_skeleton_info)
 
     mesh_dir, skel_dir = str(tmp_path / "vol" / "mesh"), str(tmp_path / "vol" / "skeleton")

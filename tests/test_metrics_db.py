@@ -1,4 +1,4 @@
-from em_seg_morpho.metrics_db import MetricsDB
+from neu_morpho.metrics_db import MetricsDB
 
 
 def test_apply_blocks_merges_bbox_and_sums_count(tmp_path):
@@ -49,7 +49,7 @@ def test_enrichment_update(tmp_path):
 
 def test_update_bodies_batches_into_one_commit(tmp_path):
     """Per-body commits made the driver a serial fsync bottleneck; batch them."""
-    from em_seg_morpho.metrics_db import MetricsDB
+    from neu_morpho.metrics_db import MetricsDB
 
     db = MetricsDB(str(tmp_path / "m.db"))
     n = db.update_bodies([(7, {"cable_length_nm": 1.0, "n_tips": 2}),
@@ -68,7 +68,7 @@ def test_update_bodies_batches_into_one_commit(tmp_path):
 
 
 def test_update_bodies_upserts_over_existing_rows(tmp_path):
-    from em_seg_morpho.metrics_db import MetricsDB
+    from neu_morpho.metrics_db import MetricsDB
 
     db = MetricsDB(str(tmp_path / "m.db"))
     db.apply_index_block("0_0_0", {7: (0, 0, 0, 10, 10, 10, 500)}, 1.0)

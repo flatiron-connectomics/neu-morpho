@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Human-readable HTML summary of a run, from its work directory.
 
-    em-morpho run-report <work-dir> [-o report.html]
+    neu-morpho run-report <work-dir> [-o report.html]
 
 Reads whatever is present — ``run_plan.json``, ``run_summary.json``, the progress
 manifests, ``fusion_stats.jsonl`` and ``metrics.db`` — so it also works on a run
@@ -449,7 +449,7 @@ def main(argv=None):
     title = os.path.basename(a.work_dir.rstrip("/")) or "run"
     doc = (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-           f'<title>{html.escape(title)} — em-seg-morpho</title>'
+           f'<title>{html.escape(title)} — neu-morpho</title>'
            f'<style>{CSS}</style></head><body>{render(run)}</body></html>')
     with open(out, "w") as f:
         f.write(doc)

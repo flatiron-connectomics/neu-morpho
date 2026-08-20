@@ -4,7 +4,7 @@ Two things live here because both two-stage ops need them and getting either
 wrong is silent:
 
 1. :func:`is_complete` — resume must skip *successful* tasks, not merely recorded
-   ones. em-blockrun's ``Manifest.is_done`` tests key **presence**, so a recorded
+   ones. blockrun's ``Manifest.is_done`` tests key **presence**, so a recorded
    ``failed`` reads as done and the task that most needs retrying would never run
    again.
 2. :func:`guarded` — per-task fault isolation, applied to **stage-2 workers only**.

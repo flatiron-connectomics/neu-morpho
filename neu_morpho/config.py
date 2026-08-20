@@ -61,7 +61,7 @@ class SkeletonConfig:
     fixed, bounded array.
     """
 
-    # Which tracer stage 1 uses. "neutu" is em_seg_morpho.neutu_trace, which
+    # Which tracer stage 1 uses. "neutu" is neu_morpho.neutu_trace, which
     # reproduces NeuTu's skeletons (tips 1.01x, cable 1.04-1.05x, identical branch
     # topology, sub-voxel centreline agreement, exact inscribed radii) at ~2.6x
     # fewer vertices; "kimimaro" is what shipped before and remains available.
@@ -163,7 +163,7 @@ class OutputConfig:
     describes, and a resumed run would skip every task and report success having
     written nothing. The CLI guards this by refusing to resume when a manifest
     claims completed work but ``dst`` has no ``info`` — see
-    ``em_seg_morpho/cli.py``. Anything writing to ``dst`` outside that entry point
+    ``neu_morpho/cli.py``. Anything writing to ``dst`` outside that entry point
     has to make the same check.
     """
 
@@ -200,7 +200,7 @@ class OutputConfig:
 
     def check_work_dir_is_local(self) -> None:
         """Fail early if ``work_dir`` is remote — sqlite and append cannot use it."""
-        from em_volume_tools import is_local
+        from neu_vol import is_local
 
         if not self.work_dir:
             raise ValueError("work_dir is required: it holds the fragments, "

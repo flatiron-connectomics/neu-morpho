@@ -2,13 +2,13 @@
 
 import numpy as np
 
-from em_seg_morpho.metrics_db import MetricsDB
-from em_seg_morpho.ops.index_segments import index_segments
+from neu_morpho.metrics_db import MetricsDB
+from neu_morpho.ops.index_segments import index_segments
 
 
 def _write_seg(path, vol):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
                           dimension_names=("z", "y", "x"), chunk=(16, 16, 16)),

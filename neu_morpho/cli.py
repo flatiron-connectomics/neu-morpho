@@ -1,10 +1,10 @@
-"""em-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
+"""neu-morpho: index -> allowlist -> meshes -> skeletons, locally or on SLURM.
 
 The command-line entry point for this package.
 
-    em-morpho run ...              # the pipeline
-    em-morpho progress <work-dir>  # live per-stage counts
-    em-morpho run-report <work-dir># self-contained HTML summary
+    neu-morpho run ...              # the pipeline
+    neu-morpho progress <work-dir>  # live per-stage counts
+    neu-morpho run-report <work-dir># self-contained HTML summary
 
 Run ``run`` ON A WORKSTATION, in a session that outlives your terminal: it starts a
 dask cluster whose workers are SLURM jobs (dask submits the sbatch itself via
@@ -12,27 +12,27 @@ dask cluster whose workers are SLURM jobs (dask submits the sbatch itself via
 so re-running the same command resumes.
 
     # 0. look at the pyramid first, and pick your scales from real metadata
-    em-morpho run --src /path/to/seg --describe
+    neu-morpho run --src /path/to/seg --describe
 
     # 1. small ROI, locally, to see it work end to end
-    em-morpho run --src ... \\
+    neu-morpho run --src ... \\
         --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \\
         --config dask-local --workers 4 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
     # 2. the same ROI on SLURM, surviving logout, publishing to s3
-    nohup env PYTHONUNBUFFERED=1 em-morpho run --src ... \\
+    nohup env PYTHONUNBUFFERED=1 neu-morpho run --src ... \\
         --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \\
         --config dask-slurm-example --config ~/my-site.yaml --workers 48 \\
         --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
     squeue -u "$USER"        # watch your jobs (read-only; don't poll in a tight loop)
 
-``python -m em_seg_morpho`` is equivalent to ``em-morpho``. ``PYTHONUNBUFFERED=1`` is
+``python -m neu_morpho`` is equivalent to ``neu-morpho``. ``PYTHONUNBUFFERED=1`` is
 the console-script equivalent of ``python -u``; without it the log lags the run.
 
 **--config takes a bundled template name or a path, and is repeatable**, deep-merged
 left to right — so a site config carries only the keys that differ. The templates ship
-with **em-blockrun**, next to ``start_dask``, so every consumer shares one set;
+with **blockrun**, next to ``start_dask``, so every consumer shares one set;
 site-specific configs do not belong in this repo.
 
 **--dst is the published volume; --work-dir is everything else.** --dst holds the
@@ -50,7 +50,7 @@ The ROI is in the voxels of **--roi-scale, which is required with --roi** — th
 six numbers name a box 4x smaller per pyramid level, and the wrong scale silently
 processes the wrong region rather than failing. It filters blocks on the *global*
 grid, so widening it later re-uses everything already done rather than redoing it
-(see em_seg_morpho/roi.py). Drop --roi for the whole volume.
+(see neu_morpho/roi.py). Drop --roi for the whole volume.
 
 Scales are integers (--mesh-scale / --skel-scale / --index-scale); the voxel size
 of each is read from the source metadata, never assumed to be 2**scale — that
@@ -68,19 +68,19 @@ import sys
 import time
 from datetime import datetime
 
-from em_blockrun import bundled_configs, load_config
+from blockrun import bundled_configs, load_config
 
-from em_seg_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
-from em_seg_morpho.metrics_db import MetricsDB
-from em_seg_morpho.ops.export_roi_seg import DEFAULT_COPY_BLOCK as SEG_COPY_BLOCK
-from em_seg_morpho.ops.export_roi_seg import scale_cost
-from em_seg_morpho.ops import (export_roi_seg, index_segments, meshify,
+from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
+from neu_morpho.metrics_db import MetricsDB
+from neu_morpho.ops.export_roi_seg import DEFAULT_COPY_BLOCK as SEG_COPY_BLOCK
+from neu_morpho.ops.export_roi_seg import scale_cost
+from neu_morpho.ops import (export_roi_seg, index_segments, meshify,
                                skeletonize_segments)
-from em_seg_morpho.precomputed import link_subresources
-from em_seg_morpho.roi import parse_roi, scale_roi
-from em_seg_morpho.scales import describe, read_scales, scale_spec
+from neu_morpho.precomputed import link_subresources
+from neu_morpho.roi import parse_roi, scale_roi
+from neu_morpho.scales import describe, read_scales, scale_spec
 
-log = logging.getLogger("em-seg-morpho")
+log = logging.getLogger("neu-morpho")
 
 # One line per stage, and the ONLY place they are described. `--stages` help, the
 # published CLI reference and the docs cheat sheet are all built from this, because a
@@ -126,24 +126,24 @@ def stages_help(indent: str = "  ", width: int = 79) -> str:
 
 
 def _configs(args) -> list[str]:
-    """``--config`` values, defaulting to em-blockrun's bundled local template.
+    """``--config`` values, defaulting to blockrun's bundled local template.
 
-    Resolution, layering and key validation all live in ``em_blockrun.dask_config``,
+    Resolution, layering and key validation all live in ``blockrun.dask_config``,
     next to ``start_dask``. This package used to carry its own copy of that, and
-    em-volume-tools a third — the kind of duplication that drifts silently.
+    neu-vol a third — the kind of duplication that drifts silently.
     """
     return args.config or ["dask-local"]
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The full ``em-morpho`` parser, built but not run.
+    """The full ``neu-morpho`` parser, built but not run.
 
     Separate from :func:`_parse_args` so the documentation can render it: the CLI
     reference is generated from *this* object by ``sphinx-argparse``, which is what
     stops the published usage from drifting away from ``--help``.
     """
     top = argparse.ArgumentParser(
-        prog="em-morpho", description=__doc__,
+        prog="neu-morpho", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = top.add_subparsers(dest="command", required=True)
 
@@ -187,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skel-scale", type=int, default=2)
     p.add_argument("--tracer", default="neutu", choices=("kimimaro", "neutu"),
                    help="stage-1 skeletonizer (default neutu). 'neutu' is "
-                        "em_seg_morpho.neutu_trace, which reproduces NeuTu's skeletons "
+                        "neu_morpho.neutu_trace, which reproduces NeuTu's skeletons "
                         "with fewer vertices and requires isotropic voxels; 'kimimaro' "
                         "is the older tracer, and the one to use on an anisotropic "
                         "pyramid (see docs/skeletonization-plan.md)")
@@ -287,7 +287,7 @@ def _parse_args(argv=None):
 
 def _ng_source(volume_dir: str) -> str:
     """The neuroglancer source URL for a volume — local paths need a file:// prefix."""
-    from em_volume_tools import is_local
+    from neu_vol import is_local
 
     return (f"precomputed://file://{volume_dir}" if is_local(volume_dir)
             else f"precomputed://{volume_dir}")
@@ -300,10 +300,10 @@ def _blocks_in(shape, block, roi, voxel_size=None, occ=None):
     the occupancy factor (2.2x on this dataset), which makes --dry-run useless
     for deciding whether a run is affordable.
     """
-    from em_blockrun import iter_blocks
+    from blockrun import iter_blocks
 
-    from em_seg_morpho.occupancy import occupied_blocks
-    from em_seg_morpho.roi import clip_to_shape, filter_blocks
+    from neu_morpho.occupancy import occupied_blocks
+    from neu_morpho.roi import clip_to_shape, filter_blocks
 
     blocks = filter_blocks(iter_blocks(shape, block), clip_to_shape(roi, shape))
     if occ is None:
@@ -320,14 +320,14 @@ def _cmd_progress(args) -> int:
     """Live per-stage progress. The implementation is a script, kept out of the
     package because it is a read-only operator tool with a matplotlib-free, stdlib-only
     dependency set — the subcommand just makes it discoverable."""
-    from em_seg_morpho._scripts import run_progress
+    from neu_morpho._scripts import run_progress
 
     argv = [args.work_dir] + (["--sample", str(args.sample)] if args.sample else [])
     return run_progress.main(argv) or 0
 
 
 def _cmd_run_report(args) -> int:
-    from em_seg_morpho._scripts import run_report
+    from neu_morpho._scripts import run_report
 
     argv = [args.work_dir] + (["-o", args.out] if args.out else [])
     return run_report.main(argv) or 0
@@ -336,7 +336,7 @@ def _cmd_run_report(args) -> int:
 def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = _parse_args(argv)
-    from em_volume_tools.logs import quiet_store_logs
+    from neu_vol.logs import quiet_store_logs
 
     # TensorStore's S3 stack logs its credential-provider chain at ERROR severity
     # on success; on a real run that buried the actual output. Real failures
@@ -358,7 +358,7 @@ def _main(args) -> int:
     # local --dst the work dir defaults to its parent, which reproduces the layout
     # from when --dst meant the run root: <run>/segmentation plus <run>/chunked,
     # metrics.db and the manifests beside it.
-    from em_volume_tools import is_local
+    from neu_vol import is_local
 
     dst = args.dst.rstrip("/")
     if args.work_dir:
@@ -423,13 +423,13 @@ def _main(args) -> int:
 
     occ = None
     if occ_spec is not None:
-        from em_volume_tools.backends.base import open_backend
+        from neu_vol.backends.base import open_backend
         _be = open_backend(occ_spec)
         occ = (_be.read_region(tuple(slice(0, x) for x in _be.shape)),
                occ_voxel, args.occupancy_dilate)
 
     log.info("source pyramid:\n%s", describe(args.src))
-    # Keep the counts: they are the denominators `em-morpho progress` needs, and
+    # Keep the counts: they are the denominators `neu-morpho progress` needs, and
     # recomputing them means re-reading the occupancy array.
     planned = {
         "index": _blocks_in(idx_s.shape, block, roi_index, idx_s.voxel_size, occ),
@@ -560,10 +560,10 @@ def _main(args) -> int:
     else:
         # Imported here, not at module scope: it pulls in dask.distributed (~1 s), which
         # `progress` and `run-report` never need.
-        from em_blockrun import start_dask
+        from blockrun import start_dask
 
         # Keep workers x cores within your QOS CPU cap.
-        with start_dask(args.workers, _configs(args), label="em-morpho",
+        with start_dask(args.workers, _configs(args), label="neu-morpho",
                         effective_config_path=work) as client:
             run_all(client)
 
@@ -572,7 +572,7 @@ def _main(args) -> int:
     # because the seg stage rewrites info, which would drop the keys.
     # Existence is probed via the kvstore, not os.path: vol may be an s3:// URL,
     # and a subresource is "there" when its own info is, not when a directory is.
-    from em_volume_tools import exists as _exists
+    from neu_vol import exists as _exists
 
     vol = out.volume_dir()
     linked: dict[str, str] = {}

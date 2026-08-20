@@ -1,4 +1,4 @@
-"""Operator tools exposed as subcommands: `em-morpho progress` / `run-report`.
+"""Operator tools exposed as subcommands: `neu-morpho progress` / `run-report`.
 
 They live inside the package so they ship with it — a tool that only exists in a
 source checkout is one an installed command cannot offer. Underscored because they

@@ -9,7 +9,7 @@ block is read, has no labels, returns) for not losing a body (not cheap).
 
 import numpy as np
 
-from em_seg_morpho.occupancy import occupied_blocks
+from neu_morpho.occupancy import occupied_blocks
 
 
 def _occ(arr, dilate=0, allowlist=None, grid=(4, 4, 4)):

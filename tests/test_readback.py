@@ -9,8 +9,8 @@ because a wrong-but-consistent encoding passes every check it makes.
 import numpy as np
 import pytest
 
-from em_seg_morpho.config import MeshConfig
-from em_seg_morpho.readback import frustum_mesh, read_body_mesh, read_body_skeleton
+from neu_morpho.config import MeshConfig
+from neu_morpho.readback import frustum_mesh, read_body_mesh, read_body_skeleton
 
 
 # --------------------------------------------------------------------------- #
@@ -29,7 +29,7 @@ def _skeleton(n=12):
 
 
 def test_skeleton_round_trip_preserves_geometry_and_radii(tmp_path):
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     vol = str(tmp_path / "segmentation")
     precomputed.write_skeleton_info(vol + "/skeleton")
@@ -49,7 +49,7 @@ def test_skeleton_round_trip_preserves_geometry_and_radii(tmp_path):
 
 def test_read_body_skeleton_is_none_when_absent(tmp_path):
     vol = str(tmp_path / "segmentation")
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
     precomputed.write_skeleton_info(vol + "/skeleton")
     assert read_body_skeleton(vol, 999) is None
 
@@ -64,7 +64,7 @@ def test_read_body_skeleton_rejects_the_no_radius_sentinel(tmp_path):
     """
     from osteoid import Skeleton
 
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     vol = str(tmp_path / "segmentation")
     # info WITHOUT the radius attribute, and a body encoded to match
@@ -82,8 +82,8 @@ def test_read_body_skeleton_rejects_the_no_radius_sentinel(tmp_path):
 
 
 def _cube_mesh(cfg):
-    from em_seg_morpho.coords import physical_box
-    from em_seg_morpho.mesh import assemble_body, mesh_block
+    from neu_morpho.coords import physical_box
+    from neu_morpho.mesh import assemble_body, mesh_block
 
     block = np.zeros((24, 24, 24), np.uint64)
     block[6:18, 6:18, 6:18] = 1
@@ -92,7 +92,7 @@ def _cube_mesh(cfg):
 
 
 def test_mesh_round_trip_returns_the_written_geometry(tmp_path):
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0)
     mesh = _cube_mesh(cfg)
@@ -118,7 +118,7 @@ def test_mesh_round_trip_returns_the_written_geometry(tmp_path):
 
 
 def test_read_body_mesh_defaults_to_the_coarsest_lod(tmp_path):
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     cfg = MeshConfig(mesh_scale=0, block_shape=(24, 24, 24), decimation_fraction=1.0,
                      num_lods=3)
@@ -136,7 +136,7 @@ def test_read_body_mesh_defaults_to_the_coarsest_lod(tmp_path):
 
 
 def test_read_body_mesh_is_none_when_absent(tmp_path):
-    from em_seg_morpho import precomputed
+    from neu_morpho import precomputed
 
     cfg = MeshConfig(mesh_scale=0)
     vol = str(tmp_path / "segmentation")

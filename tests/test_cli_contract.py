@@ -17,15 +17,15 @@ CONDA_ONLY = ["vol2mesh", "dvidutils", "kimimaro", "DracoPy", "osteoid", "tensor
 
 
 def test_build_parser_returns_the_parser_without_running_it():
-    from em_seg_morpho.cli import build_parser
+    from neu_morpho.cli import build_parser
 
     parser = build_parser()
     assert isinstance(parser, argparse.ArgumentParser)
-    assert parser.prog == "em-morpho"
+    assert parser.prog == "neu-morpho"
 
 
 def test_every_subcommand_is_reachable_from_the_parser():
-    from em_seg_morpho import cli
+    from neu_morpho import cli
 
     parser = cli.build_parser()
     subs = next(a for a in parser._actions
@@ -37,8 +37,8 @@ def test_every_subcommand_is_reachable_from_the_parser():
 
 def test_run_validation_still_reports_against_the_run_subparser():
     """`build_parser` hands `_parse_args` the run subparser so its errors keep naming
-    `em-morpho run ...` rather than the top-level usage."""
-    from em_seg_morpho import cli
+    `neu-morpho run ...` rather than the top-level usage."""
+    from neu_morpho import cli
 
     parser = cli.build_parser()
     assert getattr(parser, "_run_parser", None) is not None
@@ -49,7 +49,7 @@ def test_every_stage_is_described():
     """`STAGE_DOC` is the only description of the stages, and three places read it:
     `--help`, the published CLI reference, and the docs cheat sheet. A stage added to
     the tuple without a description would silently go undocumented in all three."""
-    from em_seg_morpho.cli import STAGE_DOC, STAGES
+    from neu_morpho.cli import STAGE_DOC, STAGES
 
     assert tuple(STAGE_DOC) == STAGES
     assert set(STAGES) == {"seg", "index", "mesh", "skel"}
@@ -60,7 +60,7 @@ def test_every_stage_is_described():
 def test_the_stage_list_reaches_run_help():
     """It lives in the description, not in `--stages`' help, because argparse's default
     formatter re-wraps argument help and collapses the block into a wall of text."""
-    from em_seg_morpho.cli import STAGES, build_parser
+    from neu_morpho.cli import STAGES, build_parser
 
     run = build_parser()._run_parser
     assert "Stages" in run.description
@@ -78,11 +78,11 @@ def test_importing_the_cli_needs_no_conda_only_package():
     Checks two separate things in the one subprocess, because spawning a second
     interpreter costs more than either assertion: nothing conda-only is reachable, and
     dask is not imported either. The latter is a startup-latency contract, not a
-    packaging one — see em-blockrun's test_lazy_dask.
+    packaging one — see blockrun's test_lazy_dask.
     """
     probe = CONDA_ONLY + ["dask", "distributed"]
     code = (
-        "import sys; import em_seg_morpho.cli; "
+        "import sys; import neu_morpho.cli; "
         f"print(','.join(m for m in {probe!r} "
         "if any(k == m or k.startswith(m + '.') for k in sys.modules)))"
     )
@@ -92,11 +92,11 @@ def test_importing_the_cli_needs_no_conda_only_package():
 
     conda = sorted(got & set(CONDA_ONLY))
     assert not conda, (
-        f"importing em_seg_morpho.cli now pulls in {conda}. The docs build installs from "
+        f"importing neu_morpho.cli now pulls in {conda}. The docs build installs from "
         f"PyPI only, and these are conda-only on flyem-forge, so this would break it. "
         f"Defer the import into the function that needs it.")
     heavy = sorted(got & {"dask", "distributed"})
     assert not heavy, (
-        f"importing em_seg_morpho.cli now pulls in {heavy}, which is ~1 s added to every "
-        f"invocation — including `em-morpho progress`, which only reads JSONL. Import "
+        f"importing neu_morpho.cli now pulls in {heavy}, which is ~1 s added to every "
+        f"invocation — including `neu-morpho progress`, which only reads JSONL. Import "
         f"start_dask inside the branch that starts a cluster, not at module scope.")

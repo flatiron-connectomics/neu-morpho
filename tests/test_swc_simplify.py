@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from em_seg_morpho import swc_simplify
+from neu_morpho import swc_simplify
 
 
 def _chain(n=40, r=2.0, spacing=1.0):

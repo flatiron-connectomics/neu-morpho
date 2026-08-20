@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from em_seg_morpho import skelmetrics
+from neu_morpho import skelmetrics
 
 
 def _line(n=40, axis=0, offset=(0, 0, 0), r=2.0):

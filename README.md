@@ -1,12 +1,12 @@
-# em-seg-morpho
+# neu-morpho
 
 Segment **morphology** from segmentation volumes: multi-resolution Draco-encoded
 **meshes** (via [`vol2mesh`]) and **skeletons** (via [`kimimaro`]), written in
 neuroglancer-precomputed format.
 
-- **Orchestration** across segments: [`em-blockrun`](../em-blockrun) (dask
+- **Orchestration** across segments: [`blockrun`](../blockrun) (dask
   local/SLURM + resumable manifest).
-- **Segmentation-array I/O**: [`em-volume-tools`](../em-volume-tools) (read
+- **Segmentation-array I/O**: [`neu-vol`](../neu-vol) (read
   precomputed / zarr / … regions and crop views).
 - **Meshes**: `vol2mesh` (marching cubes → simplify → Draco → multi-resolution
   neuroglancer mesh).
@@ -19,29 +19,29 @@ rather than materialized whole.
 ## Environment
 
 One conda environment covers this repo and the two below it, each installed
-editable. `em-blockrun` and `em-volume-tools` must be **sibling directories**.
+editable. `blockrun` and `neu-vol` must be **sibling directories**.
 
 ```bash
-conda activate em-lib
-pip install --no-deps -e ../em-blockrun -e ../em-volume-tools -e .
+conda activate neu-env
+pip install --no-deps -e ../blockrun -e ../neu-vol -e .
 python -m pytest -q
 ```
 
 Python is pinned to **3.12**: `vol2mesh` and `dvidutils` are only built for py312
 on flyem-forge, and they are conda-only (no PyPI equivalent), so the conda
 environment — not pip — has to provide them. The combined spec lives one level
-up, at `em-libraries/environment.yml`. Skeleton *comparison* tooling
+up, at `neu-suite/environment.yml`. Skeleton *comparison* tooling
 (`skelcompare.py`) needs the `compare` extra: `networkx`, `plotly`, `skeletor`.
 
 ## Running it
 
-Installing the package provides the **`em-morpho`** command (equivalently
-`python -m em_seg_morpho`):
+Installing the package provides the **`neu-morpho`** command (equivalently
+`python -m neu_morpho`):
 
 ```bash
-em-morpho run ...                  # the pipeline
-em-morpho progress <work-dir>      # live per-stage counts
-em-morpho run-report <work-dir>    # self-contained HTML summary
+neu-morpho run ...                  # the pipeline
+neu-morpho progress <work-dir>      # live per-stage counts
+neu-morpho run-report <work-dir>    # self-contained HTML summary
 ```
 
 `run` drives the stages against a dask cluster — local or SLURM, chosen by
@@ -74,15 +74,15 @@ of only stage 2 reuses the fragments already on disk instead of recomputing them
 
 ```bash
 # 0. look at the pyramid and pick scales from real metadata (no cluster, no writes)
-em-morpho run --src /path/to/seg --describe
+neu-morpho run --src /path/to/seg --describe
 
 # 1. one small cube, in-process — the fastest way to see it work end to end
-em-morpho run --src ... \
+neu-morpho run --src ... \
     --dst /path/to/morpho/segmentation --work-dir /path/to/morpho \
     --serial --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel
 
 # 2. the same cube on SLURM, surviving logout, publishing to s3
-nohup env PYTHONUNBUFFERED=1 em-morpho run --src ... \
+nohup env PYTHONUNBUFFERED=1 neu-morpho run --src ... \
     --dst s3://bucket/sample3/segmentation --work-dir /path/to/morpho \
     --config dask-slurm-example --config ~/my-site.yaml --workers 48 \
     --roi 0,0,0,512,2048,2048 --roi-scale 2 --stages index,mesh,skel > run.log 2>&1 &
@@ -102,11 +102,11 @@ wrong region instead of failing.
 
 `--config` takes a **bundled template name or a path**, and is **repeatable**,
 deep-merged left to right. The templates (`dask-local`, used by default, and
-`dask-slurm-example`) ship with **em-blockrun**, next to `start_dask`, so every
+`dask-slurm-example`) ship with **blockrun**, next to `start_dask`, so every
 consumer shares one set. An overlay carries only the keys that differ:
 
 ```bash
-em-morpho run --config dask-slurm-example --config ~/my-site.yaml ...
+neu-morpho run --config dask-slurm-example --config ~/my-site.yaml ...
 ```
 
 ```yaml
@@ -189,5 +189,5 @@ See `docs/DESIGN.md`.
 Licensed under the [GNU General Public License v3.0 or later](LICENSE). GPL rather
 than a permissive licence because this package imports `kimimaro` and `dijkstra3d`,
 both GPL-3.0-or-later, which makes it a combined work — see the Licence note in
-`em_seg_morpho/neutu_trace.py`. See [CONTRIBUTING.md](CONTRIBUTING.md) for how
+`neu_morpho/neutu_trace.py`. See [CONTRIBUTING.md](CONTRIBUTING.md) for how
 contributions are licensed.

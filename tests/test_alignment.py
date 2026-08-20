@@ -3,8 +3,8 @@ and skeletons). Everything lives in one physical-nm world space."""
 
 import numpy as np
 
-from em_seg_morpho.config import SkeletonConfig
-from em_seg_morpho.coords import crop_origin_nm, physical_box, skeleton_to_physical
+from neu_morpho.config import SkeletonConfig
+from neu_morpho.coords import crop_origin_nm, physical_box, skeleton_to_physical
 
 
 def test_physical_box_scales_region_by_voxel_size():

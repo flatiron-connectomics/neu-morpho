@@ -1,4 +1,4 @@
-"""Block-first, two-stage skeletonization orchestrated with em-blockrun.
+"""Block-first, two-stage skeletonization orchestrated with blockrun.
 
     stage 1 "skel-chunk" : block_map over non-empty blocks -> per-(body,block) fragments
     stage 2 "skel-fuse"  : block_map over bodies (from fragments) -> precomputed skeletons
@@ -24,7 +24,7 @@ import json
 import logging
 from typing import Any, Sequence
 
-from em_blockrun import Manifest, block_map, iter_blocks
+from blockrun import Manifest, block_map, iter_blocks
 
 from ..allowlist import load_allowlist
 from ..config import OutputConfig, SkeletonConfig
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 def _chunk_block(block, *, seg_spec: dict, chunked_dir: str, cfg: SkeletonConfig,
                  allow: set[int] | None) -> tuple:
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     seg = open_backend(seg_spec).read_region(block.region)   # one block at the skeleton scale
     origin_vox = tuple(s.start for s in block.region)
@@ -120,7 +120,7 @@ def skeletonize_segments(
     failures stop looking incidental; 0 disables it. A systemic error
     (``MemoryError``, a full disk, a broken import) aborts immediately regardless.
     """
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     cfg = cfg or SkeletonConfig()
     allow = load_allowlist(allowlist)

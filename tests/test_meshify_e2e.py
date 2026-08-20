@@ -9,13 +9,13 @@ import os
 
 import numpy as np
 
-from em_seg_morpho.config import MeshConfig, OutputConfig
-from em_seg_morpho.ops.meshify import meshify
+from neu_morpho.config import MeshConfig, OutputConfig
+from neu_morpho.ops.meshify import meshify
 
 
 def _write_seg_zarr(path, vol):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
@@ -65,7 +65,7 @@ def test_meshify_end_to_end(tmp_path):
 
 def test_mesh_metrics_land_in_db(tmp_path):
     """Meshing enriches the same per-body DB skeletonization writes to."""
-    from em_seg_morpho.metrics_db import MetricsDB
+    from neu_morpho.metrics_db import MetricsDB
 
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 100          # a cube inside one block
@@ -97,8 +97,8 @@ def test_mesh_metrics_land_in_db(tmp_path):
 
 def test_mesh_metrics_are_computed_before_lod_decimation():
     """Metrics describe LOD 0, not whatever the multires writer decimated it to."""
-    from em_seg_morpho.mesh import assemble_body, mesh_block, mesh_metrics
-    from em_seg_morpho.coords import physical_box
+    from neu_morpho.mesh import assemble_body, mesh_block, mesh_metrics
+    from neu_morpho.coords import physical_box
 
     block = np.zeros((16, 16, 16), np.uint64)
     block[4:12, 4:12, 4:12] = 1
@@ -116,8 +116,8 @@ def test_count_components_sees_unstitched_fragments():
     """The count is QC: it reports >1 when block fragments failed to weld."""
     from vol2mesh import concatenate_meshes
 
-    from em_seg_morpho.coords import physical_box
-    from em_seg_morpho.mesh import count_components, mesh_block
+    from neu_morpho.coords import physical_box
+    from neu_morpho.mesh import count_components, mesh_block
 
     vol = np.zeros((32, 16, 16), np.uint64)
     vol[4:28, 6:10, 6:10] = 1

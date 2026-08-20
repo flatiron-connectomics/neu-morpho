@@ -29,8 +29,8 @@ from dataclasses import replace
 
 import numpy as np
 
-from em_seg_morpho.config import SkeletonConfig
-from em_seg_morpho.skeleton import fuse_body, fusion_stats_summary, skeletonize_block
+from neu_morpho.config import SkeletonConfig
+from neu_morpho.skeleton import fuse_body, fusion_stats_summary, skeletonize_block
 
 DUSTS = [0.0, 250.0, 500.0, 1000.0, 1500.0, 3000.0]
 TICKS = [0.0, 1000.0, 3000.0]
@@ -45,7 +45,7 @@ def _parse_floats(s):
 # --------------------------------------------------------------------------- #
 def frags_from_chunked(chunked_dir, cfg, limit=None):
     """Reuse fragments a skel-chunk run already wrote."""
-    from em_seg_morpho import fragments as _frag
+    from neu_morpho import fragments as _frag
 
     bodies = _frag.list_bodies(chunked_dir)
     if limit:
@@ -56,9 +56,9 @@ def frags_from_chunked(chunked_dir, cfg, limit=None):
 
 def frags_from_volume(seg_spec, db_path, cfg, limit, min_voxels):
     """Skeletonize each body's blocks straight from the volume, via the metrics DB."""
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
-    from em_seg_morpho.metrics_db import MetricsDB
+    from neu_morpho.metrics_db import MetricsDB
 
     be = open_backend(seg_spec)
     shape = be.shape
@@ -122,7 +122,7 @@ def noisy_arbor(length=140, r=3, pad=8, n_twigs=6, twig_len=6, n_specks=4, seed=
 
 def frags_synthetic(cfg):
     """Synthetic bodies, block-split the way skel-chunk would split them."""
-    from em_seg_morpho.skelcompare import SHAPES
+    from neu_morpho.skelcompare import SHAPES
 
     bodies = {name: fn()[0] for name, fn in SHAPES.items()}
     bodies["noisy_arbor"] = noisy_arbor()

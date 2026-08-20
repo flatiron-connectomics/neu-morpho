@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from em_seg_morpho import neutu_io                                       # noqa: E402
+from neu_morpho import neutu_io                                       # noqa: E402
 
 # Validated categorical slots 1 and 3 (blue / aqua): all-pairs CVD dE 9.2,
 # normal-vision 24.0. Aqua is under 3:1 on this surface, so both series carry

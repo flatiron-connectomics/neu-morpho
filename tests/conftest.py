@@ -17,7 +17,7 @@ lands somewhere faster. `--basetemp`, by contrast, `rm -rf`s the path it is give
 session start and retains nothing, so a failed run's artifacts are gone.
 
 Escape hatches, in the order they win: an explicit `--basetemp` (pytest ignores the
-temproot entirely), an inherited `PYTEST_DEBUG_TEMPROOT`, and `EM_TESTS_TMPFS=0` to
+temproot entirely), an inherited `PYTEST_DEBUG_TEMPROOT`, and `NEU_TESTS_TMPFS=0` to
 force the platform default.
 
 The *code* below is duplicated in all three em-* repos, which are separate git repos and
@@ -37,7 +37,7 @@ _CANDIDATES = ("/dev/shm", "/run/shm")
 
 def _tmpfs_root() -> str | None:
     """A writable tmpfs directory with room to spare, or None to leave the default."""
-    if os.environ.get("EM_TESTS_TMPFS") == "0":
+    if os.environ.get("NEU_TESTS_TMPFS") == "0":
         return None
     for candidate in _CANDIDATES:
         root = Path(candidate)

@@ -27,7 +27,7 @@ import pdb
 import sys
 import traceback
 
-from em_seg_morpho.skelcompare import (
+from neu_morpho.skelcompare import (
     SHAPES, body_from_volume, mask_to_trimesh, mesh_from_file,
     run_kimimaro, run_skeletor, skeleton_stats, visualize, write_swc,
 )

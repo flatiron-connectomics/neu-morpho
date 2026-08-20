@@ -92,10 +92,10 @@ def mask_to_trimesh(mask_zyx, voxel_size_zyx):
 def body_from_volume(seg_spec, body_id, bbox_zyx, voxel_size_zyx):
     """Load a real body's mask + mesh from a segmentation crop (both methods).
 
-    ``seg_spec`` is an em-volume-tools backend spec opened at the meshing scale;
+    ``seg_spec`` is an neu-vol backend spec opened at the meshing scale;
     ``bbox_zyx`` = (z0, y0, x0, z1, y1, x1) in that scale's voxels.
     """
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     z0, y0, x0, z1, y1, x1 = bbox_zyx
     region = open_backend(seg_spec).read_region((slice(z0, z1), slice(y0, y1), slice(x0, x1)))

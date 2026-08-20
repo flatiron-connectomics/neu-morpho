@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from em_seg_morpho import neutu_io, skelmetrics          # noqa: E402
+from neu_morpho import neutu_io, skelmetrics          # noqa: E402
 
 # sequential blue ramp; the lightest steps are dropped because they vanish
 # against the grey segment silhouette

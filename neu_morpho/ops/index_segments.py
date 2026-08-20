@@ -14,7 +14,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from em_blockrun import block_map, iter_blocks
+from blockrun import block_map, iter_blocks
 
 from ..metrics_db import MetricsDB
 from .. import roi as _roi
@@ -26,7 +26,7 @@ def _block_key(index) -> str:
 
 def _index_block(block, *, seg_spec: dict, fullres_factor: Sequence[int]) -> tuple:
     """Per-label bbox (full-res voxels) + count for one block. Returns (key, partials)."""
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     seg = open_backend(seg_spec).read_region(block.region)
     key = _block_key(block.index)
@@ -78,7 +78,7 @@ def index_segments(
     fullres_factor = tuple(fullres_factor or (2 ** scan_scale,) * 3)
     voxel_volume = float(np.prod(scan_voxel_size))
 
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
     shape = open_backend(seg_spec).shape
     roi = _roi.clip_to_shape(_roi.parse_roi(roi), shape)
     blocks = _roi.filter_blocks(iter_blocks(shape, block_shape), roi)

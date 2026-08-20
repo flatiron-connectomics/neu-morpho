@@ -7,7 +7,7 @@ global position and it lands in the same physical-nm space as the meshes and
 skeletons (coords.py). Without that the labels would sit at the origin while the
 meshes sat tens of microns away.
 
-**Every source scale is copied, not regenerated.** ``em_volume_tools.extract_roi``
+**Every source scale is copied, not regenerated.** ``neu_vol.extract_roi``
 would work, but its materializer downsamples from level 0 upward — so exporting a
 7-level pyramid would re-derive levels the source already has, reading 64x more
 data than needed and risking a different downsampling rule than the source used.
@@ -33,13 +33,13 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from em_blockrun import Manifest, block_map, iter_blocks
+from blockrun import Manifest, block_map, iter_blocks
 
 from ._progress import check_manifest_matches_output, group_counts, is_complete
 
 logger = logging.getLogger(__name__)
 
-# The only precomputed profile em-volume-tools ships; the name is about where it
+# The only precomputed profile neu-vol ships; the name is about where it
 # is usually written, not a requirement to be on S3.
 PRECOMPUTED_PROFILE = "s3-neuroglancer"
 # Copy in chunks larger than the stored chunk (128^3) to keep the task count sane.
@@ -74,7 +74,7 @@ def source_levels(src, roi_voxel_size) -> list[tuple]:
     carries no pyramid metadata (a bare zarr array, an HDF5 dataset), so this op
     still works on sources ``scales.read_scales`` cannot introspect.
     """
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     from ..scales import ScaleInfo, read_scales, scale_spec
 
@@ -139,8 +139,8 @@ def _copy_block(block, *, src_spec: dict, dst_spec: dict, src_origin: Sequence[i
     value, so an all-zero block writes nothing and neuroglancer reads the absent
     chunk as zero.
     """
-    from em_volume_tools.backends.base import open_backend
-    from em_volume_tools.retry import with_retry
+    from neu_vol.backends.base import open_backend
+    from neu_vol.retry import with_retry
 
     src_region = tuple(slice(o + s.start, o + s.stop)
                        for o, s in zip(src_origin, block.region))
@@ -178,9 +178,9 @@ def export_roi_seg(
     scales to copy (default: all) — see :func:`scale_cost` first, since scale 0
     usually dominates.
     """
-    from em_volume_tools.backends.base import open_backend
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import precomputed_create_spec
+    from neu_vol.backends.base import open_backend
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import precomputed_create_spec
 
     levels = source_levels(src, roi_voxel_size)
     if scale_indices is None:
@@ -200,7 +200,7 @@ def export_roi_seg(
     if progress_path:
         progress = progress_path
     else:
-        from em_volume_tools import is_local
+        from neu_vol import is_local
         if not is_local(out_dir):
             raise ValueError(
                 f"progress_path is required when out_dir is remote ({out_dir}): "

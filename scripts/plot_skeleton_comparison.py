@@ -27,7 +27,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
-from em_seg_morpho import neutu_io, skelmetrics                              # noqa: E402
+from neu_morpho import neutu_io, skelmetrics                              # noqa: E402
 
 # Categorical slots 1-3 of the reference palette, which validate all-pairs in both
 # modes (worst CVD dE 9.2, normal-vision 24.0 — checked with the dataviz validator,

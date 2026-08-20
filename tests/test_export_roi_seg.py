@@ -12,7 +12,7 @@ import os
 import numpy as np
 import pytest
 
-from em_seg_morpho.ops.export_roi_seg import block_align, export_roi_seg
+from neu_morpho.ops.export_roi_seg import block_align, export_roi_seg
 
 
 def test_block_align_expands_to_whole_blocks_and_clips():
@@ -28,8 +28,8 @@ def test_block_align_expands_to_whole_blocks_and_clips():
 
 
 def _write_seg(path, vol, voxel=(32.0, 32.0, 32.0)):
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import zarr3_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import zarr3_create_spec
 
     be = TensorStoreBackend.create(
         zarr3_create_spec("local", path, vol.shape, "uint64",
@@ -72,7 +72,7 @@ def test_exported_labels_land_at_the_same_nm_as_the_source(tmp_path):
     export_roi_seg(src, out, roi=(64, 64, 64, 128, 128, 128), roi_voxel_size=(32.0, 32.0, 32.0),
                    block_shape=(64, 64, 64), scale_indices=[0], encoding="raw", client=None)
 
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
     be = open_backend({"backend": "neuroglancer_precomputed", "path": out, "scale_index": 0})
     got = be.read_region((slice(0, 64), slice(0, 64), slice(0, 64)))
     # the copy's local [0:64] is the source's [64:128]
@@ -84,8 +84,8 @@ def _volume_with_subresources(tmp_path):
     """A precomputed segmentation volume with mesh/ and skeleton/ inside it."""
     import numpy as np
 
-    from em_seg_morpho.config import MeshConfig
-    from em_seg_morpho.precomputed import (write_body_skeleton, write_mesh_info,
+    from neu_morpho.config import MeshConfig
+    from neu_morpho.precomputed import (write_body_skeleton, write_mesh_info,
                                            write_skeleton_info)
 
     vol = np.zeros((128, 128, 128), np.uint64)
@@ -105,7 +105,7 @@ def _volume_with_subresources(tmp_path):
 
 
 def test_link_subresources_sets_the_spec_keys(tmp_path):
-    from em_seg_morpho.precomputed import link_subresources
+    from neu_morpho.precomputed import link_subresources
 
     out = _volume_with_subresources(tmp_path)
     assert link_subresources(out, mesh="mesh", skeletons="skeleton") == {
@@ -122,7 +122,7 @@ def test_link_subresources_sets_the_spec_keys(tmp_path):
 
 def test_link_subresources_rejects_a_wrong_or_missing_target(tmp_path):
     """Pointing a volume at the wrong directory fails silently in the viewer."""
-    from em_seg_morpho.precomputed import link_subresources
+    from neu_morpho.precomputed import link_subresources
 
     out = _volume_with_subresources(tmp_path)
     # existence is tested by reading <sub>/info, so object stores (no directories)
@@ -139,7 +139,7 @@ def test_link_subresources_rejects_a_wrong_or_missing_target(tmp_path):
 def test_link_subresources_refuses_an_image_volume(tmp_path):
     import numpy as np
 
-    from em_seg_morpho.precomputed import link_subresources
+    from neu_morpho.precomputed import link_subresources
 
     out = _volume_with_subresources(tmp_path)
     path = os.path.join(out, "info")
@@ -152,7 +152,7 @@ def test_link_subresources_refuses_an_image_volume(tmp_path):
 
 def test_ops_write_inside_the_volume():
     """mesh_dir/skeleton_dir are subdirectories of the VOLUME; bookkeeping is not."""
-    from em_seg_morpho.config import OutputConfig
+    from neu_morpho.config import OutputConfig
 
     out = OutputConfig(dst="/data/run/segmentation", work_dir="/scratch/run")
     assert out.volume_dir() == "/data/run/segmentation"
@@ -165,7 +165,7 @@ def test_ops_write_inside_the_volume():
 
 def test_dst_may_be_remote_but_work_dir_may_not():
     """Only the data destination can be an object store."""
-    from em_seg_morpho.config import OutputConfig
+    from neu_morpho.config import OutputConfig
 
     remote = OutputConfig(dst="s3://bucket/sample3/segmentation", work_dir="/scratch/run")
     assert remote.volume_dir() == "s3://bucket/sample3/segmentation"
@@ -195,8 +195,8 @@ def test_align_can_be_turned_off(tmp_path):
 def _write_pyramid(tmp_path, levels=3):
     """A precomputed source with `levels` scales, 2x isotropic, distinct labels."""
     import numpy as np
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import precomputed_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import precomputed_create_spec
 
     path = str(tmp_path / "src.precomputed")
     full = np.zeros((64, 64, 64), np.uint64)
@@ -220,7 +220,7 @@ def test_export_copies_every_scale_with_scaled_offsets(tmp_path):
     The offsets must scale with resolution: get that wrong and coarse levels sit
     at the wrong place, which looks like a rendering glitch when you zoom out.
     """
-    from em_volume_tools.backends.base import open_backend
+    from neu_vol.backends.base import open_backend
 
     src = _write_pyramid(tmp_path, levels=3)
     out = str(tmp_path / "segmentation")
@@ -259,7 +259,7 @@ def test_scale_indices_restricts_the_export(tmp_path):
 
 
 def test_scale_cost_reports_the_expensive_level(tmp_path):
-    from em_seg_morpho.ops.export_roi_seg import scale_cost
+    from neu_morpho.ops.export_roi_seg import scale_cost
 
     src = _write_pyramid(tmp_path, levels=3)
     cost = scale_cost(src, (16, 16, 16, 48, 48, 48), (8.0,) * 3, block_shape=(16, 16, 16))
@@ -271,10 +271,10 @@ def test_scale_cost_reports_the_expensive_level(tmp_path):
 
 def _one_block_and_specs(tmp_path):
     """A real source, a real precomputed destination, and one block to copy."""
-    from em_blockrun import iter_blocks
+    from blockrun import iter_blocks
 
-    from em_volume_tools.backends.tensorstore import TensorStoreBackend
-    from em_volume_tools.profiles import precomputed_create_spec
+    from neu_vol.backends.tensorstore import TensorStoreBackend
+    from neu_vol.profiles import precomputed_create_spec
 
     vol = np.zeros((32, 32, 32), np.uint64)
     vol[4:12, 4:12, 4:12] = 3
@@ -291,7 +291,7 @@ def _one_block_and_specs(tmp_path):
 
 def _flaky_open(monkeypatch, error: str, fail_on: int):
     """Wrap open_backend so the ``fail_on``-th call raises ``error``."""
-    from em_volume_tools.backends import base as be_base
+    from neu_vol.backends import base as be_base
 
     calls = {"n": 0}
     original = be_base.open_backend
@@ -312,12 +312,12 @@ def test_copy_block_survives_a_transient_store_failure(tmp_path, monkeypatch):
     Stage-1 blocks are fail-fast by design, but a copy block feeds no aggregation
     and rewriting the same voxels is idempotent, so it retries instead.
     """
-    from em_seg_morpho.ops.export_roi_seg import _copy_block
+    from neu_morpho.ops.export_roi_seg import _copy_block
 
     # What is under test is that the copy retries at all, not how long it waits —
-    # the backoff schedule itself is em-volume-tools' test_retry. Left real, the
+    # the backoff schedule itself is neu-vol' test_retry. Left real, the
     # default 1 s base delay is spent sleeping in the one test that reaches it.
-    monkeypatch.setattr("em_volume_tools.retry.time.sleep", lambda *_: None)
+    monkeypatch.setattr("neu_vol.retry.time.sleep", lambda *_: None)
     src, dst, block = _one_block_and_specs(tmp_path)
     calls = _flaky_open(monkeypatch,
                         "UNAVAILABLE: CURL error SSL connect error: Recv failure: "
@@ -331,7 +331,7 @@ def test_copy_block_survives_a_transient_store_failure(tmp_path, monkeypatch):
 
 def test_a_403_during_copy_is_not_retried(tmp_path, monkeypatch):
     """Permissions will not fix themselves; retrying just burns the budget."""
-    from em_seg_morpho.ops.export_roi_seg import _copy_block
+    from neu_morpho.ops.export_roi_seg import _copy_block
 
     src, dst, block = _one_block_and_specs(tmp_path)
     calls = _flaky_open(monkeypatch,

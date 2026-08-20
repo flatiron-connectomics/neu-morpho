@@ -6,8 +6,8 @@ import os
 import numpy as np
 import pytest
 
-from em_seg_morpho import skeleton
-from em_seg_morpho.config import SkeletonConfig
+from neu_morpho import skeleton
+from neu_morpho.config import SkeletonConfig
 
 
 def test_default_tracer_is_neutu():
@@ -28,7 +28,7 @@ def test_edge_memory_guard_raises_instead_of_oom():
     cap is set so it cannot fire at the shipped 256^3 block, so the test has to
     lower it to exercise the path at all.
     """
-    from em_seg_morpho import neutu_trace
+    from neu_morpho import neutu_trace
 
     m = _two_body_block(n=32)
     tiny = SkeletonConfig(anisotropy=(32.0,) * 3, dust_threshold=0, tracer="neutu",
@@ -47,12 +47,12 @@ def _driver():
     It used to be loaded from examples/ by path, which is what made it the one part
     of the shipped pipeline the test suite could not reach normally.
     """
-    from em_seg_morpho import cli
+    from neu_morpho import cli
 
     return cli
 
 
-# The pipeline is `em-morpho run`; `progress` and `run-report` are sibling
+# The pipeline is `neu-morpho run`; `progress` and `run-report` are sibling
 # subcommands, so every pipeline argument now sits behind "run".
 BASE_ARGV = ["run", "--src", "x", "--dst", "y", "--work-dir", "z"]
 
@@ -184,8 +184,8 @@ def test_neutu_cost_is_validated_not_silently_ignored():
                                                       neutu_cost="nonsense"))
 
 
-# Config resolution, layering, shadowing and key validation are em-blockrun's, and
-# are tested there (em_blockrun/tests/test_dask_config.py). What is this package's
+# Config resolution, layering, shadowing and key validation are blockrun's, and
+# are tested there (blockrun/tests/test_dask_config.py). What is this package's
 # business is that --config reaches them, defaults sensibly, and fails early.
 def test_config_defaults_to_the_bundled_local_template_and_is_repeatable(tmp_path):
     cli = _driver()
@@ -226,7 +226,7 @@ def test_the_operator_subcommands_parse():
 
 
 def test_a_subcommand_is_required():
-    """A bare `em-morpho` must not silently mean `run`."""
+    """A bare `neu-morpho` must not silently mean `run`."""
     cli = _driver()
     with pytest.raises(SystemExit):
         cli._parse_args([])
