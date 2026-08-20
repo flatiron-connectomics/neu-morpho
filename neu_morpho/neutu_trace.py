@@ -1,7 +1,7 @@
 """NeuTu-style TEASAR skeletonization.
 
 NeuTu and kimimaro are both TEASAR, and the measured quality difference
-(``docs/skeletonization-comparison.md``) comes from a few specific choices rather
+(``docs/skeletonization.md``) comes from a few specific choices rather
 than a different algorithm. This module implements the NeuTu variant directly.
 
 **This is a reimplementation, not a copy of ``kimimaro.trace``.** The algorithm
@@ -37,7 +37,7 @@ NeuTu's ``ZSpGrowParser`` walks a single parent field, which is what this does.
 
 Radii are the inscribed ``DBF[vertex]``, as kimimaro reports them. Matching
 NeuTu's radius convention is deliberately *not* done here — see step 4 of
-``docs/skeletonization-plan.md``, and note that NeuTu's ``−0.5`` correction
+``docs/skeletonization.md``, and note that NeuTu's ``−0.5`` correction
 (``AdjustedDistanceWeight``, ``gui/zstackskeletonizer.cpp:82``) is already
 established as harmful at these radii.
 
@@ -109,14 +109,14 @@ MIN_LENGTH = 10.0
 #
 # So this defaults to OFF. The un-invalidated-length selector that would make
 # it sound was implemented, measured not to help, and removed; the numbers and
-# the method are in docs/skeletonization-plan.md and commit 83d1356.
+# the method are in docs/skeletonization.md and commit 83d1356.
 PATIENCE = None
 
 # How the path cost is applied. "voxel" uses dijkstra3d's per-voxel field, whose
 # effective edge cost is d*f(destination). "edge" builds the graph explicitly and
 # uses NeuTu's symmetric d*[f(u)+f(v)] via scipy. They agree only for uniform step
 # lengths; measured inside real bulbs the per-voxel routes cost ~10% more under
-# NeuTu's own cost and never matched (0/16). See docs/skeletonization-plan.md.
+# NeuTu's own cost and never matched (0/16). See docs/skeletonization.md.
 COST = "edge"
 
 # "edge" is the only part of the tracer whose memory scales with the component, so
@@ -202,7 +202,7 @@ def skeletonize(mask_zyx, *, scale: float = INVALIDATION_SCALE,
     both the parent field and the rolling-ball invalidation are confined to that
     root's component — so a single-root trace covers exactly one component and
     silently reports the rest as nothing. Bodies here are genuinely fragmented
-    (``docs/skeletonization-comparison.md``), and the root comes from
+    (``docs/skeletonization.md``), and the root comes from
     ``first_label``, i.e. whichever voxel happens to be first in memory order.
     Measured on body 6308993: 7 components, the largest holding 96.9% of the
     voxels, and ``first_label`` landing on one holding 3.06% — which is exactly

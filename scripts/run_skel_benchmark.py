@@ -2,7 +2,7 @@
 """Run NeuTu and kimimaro over the benchmark bodies and score both.
 
 The NeuTu SWCs this writes are the **regression target** for the Python
-NeuTu-style skeletonizer described in ``docs/skeletonization-plan.md``; the
+NeuTu-style skeletonizer described in ``docs/skeletonization.md``; the
 kimimaro results are the incumbent, so a port that regresses is visible.
 
 **Everything is in voxel units**, matching the 2026-07-30 reference outputs:
@@ -13,7 +13,7 @@ it needs voxel units regardless. Multiply by ``voxel_nm`` to report nm.
 
 Scoring always passes ``edges``. Sphere-stamping vertices instead of sweeping
 capsules along edges reversed the tool ranking once already — see the Corrections
-section of ``docs/skeletonization-comparison.md``.
+section of ``docs/skeletonization.md``.
 
 Bodies run in parallel, largest first (the tail is one big body, so starting it
 last would idle the pool). Each body is isolated: a failure is recorded and the
@@ -187,7 +187,7 @@ def main() -> int:
     ap.add_argument("--port-const", type=float, default=None,
                     help="invalidation const in VOXELS for the port. NeuTu uses 2 "
                          "(maskExpansionRadius); larger values compensate for our "
-                         "weaker target selection — see docs/skeletonization-plan.md")
+                         "weaker target selection — see docs/skeletonization.md")
     ap.add_argument("--port-min-length", type=float, default=None,
                     help="minimalLength in voxels (default: NeuTu's 10)")
     ap.add_argument("--only", help="comma-separated body ids")

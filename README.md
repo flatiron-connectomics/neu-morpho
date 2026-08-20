@@ -1,7 +1,7 @@
 # neu-morpho
 
 Segment **morphology** from segmentation volumes: multi-resolution Draco-encoded
-**meshes** (via [`vol2mesh`]) and **skeletons** (via [`kimimaro`]), written in
+**meshes** (via [`vol2mesh`]) and **skeletons** (TEASAR), written in
 neuroglancer-precomputed format.
 
 - **Orchestration** across segments: [`blockrun`](../blockrun) (dask
@@ -10,7 +10,11 @@ neuroglancer-precomputed format.
   precomputed / zarr / … regions and crop views).
 - **Meshes**: `vol2mesh` (marching cubes → simplify → Draco → multi-resolution
   neuroglancer mesh).
-- **Skeletons**: `kimimaro` (TEASAR) → precomputed skeleton format.
+- **Skeletons**: `neu_morpho.neutu_trace` by default — a reimplementation of
+  NeuTu's TEASAR that matches it to sub-voxel centreline agreement with ~2.6×
+  fewer nodes than [`kimimaro`], which remains available as
+  `--tracer kimimaro` and is **required for anisotropic voxels**. Why each
+  constant is what it is: [`docs/skeletonization.md`](docs/skeletonization.md).
 
 Large segments — whose binary mask over a big bounding box would OOM (the failure
 mode this package is designed around) — are meshed **chunked and stitched**
@@ -57,7 +61,7 @@ neu-morpho run-report <work-dir>    # self-contained HTML summary
 | `seg` | Copies the ROI's labels out as a precomputed volume, so the meshes and skeletons can be viewed against the segmentation they came from. **Off by default** — it is pure I/O and usually the most expensive stage of the four. |
 | `index` | Scans the volume once and records **every body's bounding box and voxel count** in a SQLite metrics DB. |
 | `mesh` | Multi-resolution Draco meshes, one per body. |
-| `skel` | kimimaro skeletons, one per body. |
+| `skel` | Skeletons, one per body. |
 
 **`index` is required before `mesh` or `skel`, and it is the stage whose purpose is
 least obvious.** Meshing and skeletonization each crop a body out of the volume by its
@@ -171,13 +175,50 @@ OME metadata) rather than assuming `2**scale`. Real pyramids are often
 anisotropic — z frequently isn't downsampled at all — and that assumption is
 exactly what misaligns skeletons against meshes.
 
-Cluster sizing lives in `configs/`. `dask-slurm-any.yaml` deliberately sets no
-`--constraint`, so jobs land on any free CPU node; the peak memory here is one
-*block*, not one body, so the fat nodes buy nothing. See the comments in that
-file before changing `--block`.
+**Size the cluster to one block, not one body.** That is the whole point of the
+block-first design: peak memory is a single block's mask and its distance
+transform regardless of how large the bodies in it are, so a constraint pinning
+jobs to fat nodes buys nothing and only shrinks the pool of nodes the job is
+eligible for. Read the sizing comments in blockrun's `dask-slurm-example`
+template before changing `--block`.
 
-Status: pipelines implemented and tested; not yet run on production data.
-See `docs/DESIGN.md`.
+### When something fails
+
+Task granularity differs per stage, and so does what a failure costs — the
+asymmetry is deliberate:
+
+| stage | one task is | on failure |
+|---|---|---|
+| `chunk` / `skel-chunk` | one **block** | raise, abort the stage |
+| `assemble` / `skel-fuse` | one **body** | record `failed`, continue |
+
+**Stage 2 isolates**, because bodies are independent: a bad one costs exactly
+that body, is recorded in the manifest, is logged with its traceback to
+`<work-dir>/failures.{mesh,skel}.jsonl`, and is retried on the next run. One
+pathological body cannot kill hour 11 of a 50k-body run.
+
+**Stage 1 does not, and that is the point.** Stage 2 aggregates across blocks, so
+a silently skipped block does not leave a hole in one block — it truncates every
+body passing through it and erases outright any body lying wholly inside it,
+while the output still looks complete. Stage 2 cannot distinguish "this body had
+3 fragments" from "it had 4 and one block died". A crash you notice; a truncated
+neuron you may not.
+
+Isolation is right for one odd body and wrong for a broken environment — 40k
+identical failures are one data point, not 40k. So a stage also aborts on a
+**systemic exception** (`MemoryError`, `ImportError`, and `OSError` with
+`ENOSPC` / `EDQUOT` / `EROFS`, all of which recur for every remaining task by
+construction) or after `max_consecutive_failures` (default 10, one success
+resets, `0` disables). Ctrl-C always stops a run immediately. The CLI logs failed
+body ids per stage and **exits non-zero**, so a scripted pipeline cannot mistake
+a partial result for a clean one.
+
+### One caveat on the metrics
+
+**`mesh_area_nm2` is measured on the decimated mesh**, since stage 1 simplifies
+before writing fragments (`decimation_fraction` defaults to 0.1). It is a sound
+*relative* size measure across bodies; do not read it as an absolute membrane
+area without checking the bias against `decimation_fraction=1.0` on a sample.
 
 [`vol2mesh`]: https://github.com/janelia-flyem/vol2mesh
 [`kimimaro`]: https://github.com/seung-lab/kimimaro

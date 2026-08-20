@@ -11,7 +11,7 @@ skeleton fragments, and stage 1 skeletonization drops per-block components below
 ``dust_threshold`` (50 voxels), so a body's small detached specks have no skeleton
 and lie outside it. Meshing applies no such threshold, so the mesh bbox is the
 body's true extent. Verified on body 6308993: the mesh bbox reproduces the
-448,672,289-voxel extent recorded in ``docs/skeletonization-comparison.md``,
+448,672,289-voxel extent recorded in ``docs/skeletonization.md``,
 whereas the skeleton bbox does not.
 
 Masks go to ceph, not the repo — a single one of these is 450 MB.

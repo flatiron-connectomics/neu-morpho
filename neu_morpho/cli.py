@@ -190,13 +190,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "neu_morpho.neutu_trace, which reproduces NeuTu's skeletons "
                         "with fewer vertices and requires isotropic voxels; 'kimimaro' "
                         "is the older tracer, and the one to use on an anisotropic "
-                        "pyramid (see docs/skeletonization-plan.md)")
+                        "pyramid (see docs/skeletonization.md)")
     p.add_argument("--neutu-cost", default="edge", choices=("voxel", "edge"),
                    help="--tracer neutu only (default edge). 'edge' is NeuTu's own "
                         "symmetric cost and matches it more closely. 'voxel' is "
                         "cheaper in memory, which matters only if a component exceeds "
                         "SkeletonConfig.neutu_edge_max_gb (see "
-                        "docs/skeletonization-plan.md)")
+                        "docs/skeletonization.md)")
     p.add_argument("--block", default="256,256,256", help="block shape (z,y,x) voxels")
 
     p.add_argument("--min-voxels", type=int, default=0,

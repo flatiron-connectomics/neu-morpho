@@ -1,6 +1,6 @@
 """Configuration for the block-first meshing pipeline and skeletonization.
 
-Meshing is **block-first, two-stage** (see docs/DESIGN.md): stage 1 meshes each
+Meshing is **block-first, two-stage**: stage 1 meshes each
 non-empty block (all/allowlisted labels at once) into per-(body, block) fragments;
 stage 2 concatenates + stitches each body's fragments into a multi-resolution
 mesh. No whole-object binary mask is ever built.
@@ -65,7 +65,7 @@ class SkeletonConfig:
     # reproduces NeuTu's skeletons (tips 1.01x, cable 1.04-1.05x, identical branch
     # topology, sub-voxel centreline agreement, exact inscribed radii) at ~2.6x
     # fewer vertices; "kimimaro" is what shipped before and remains available.
-    # See docs/skeletonization-plan.md.
+    # See docs/skeletonization.md.
     #
     # It is the default because NeuTu's node placement and radii were the point of
     # the exercise, and it drops less cable to postprocessing on real data (0.033 vs

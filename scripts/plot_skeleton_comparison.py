@@ -13,7 +13,7 @@ not automatically a win either.
 
 Note what is deliberately *not* plotted: coverage. It is confounded by branch
 count, so a figure ranking methods by how much of the mask they fill rewards
-whichever one invents the most neurites. See docs/skeletonization-comparison.md.
+whichever one invents the most neurites. See docs/skeletonization.md.
 
     python scripts/plot_skeleton_comparison.py --bodies 6308993 45892915 --out fig.png
 """

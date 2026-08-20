@@ -1,6 +1,6 @@
 """Talk to NeuTu: the ``.sobj`` sparse-mask format, SWC, and the headless CLI.
 
-Needed by **both** routes under consideration (see ``docs/skeletonization-plan.md``):
+Needed by **both** routes under consideration (see ``docs/skeletonization.md``):
 
 - the *plugin* route shells out to NeuTu and reads back its SWC;
 - the *reimplementation* route needs NeuTu's SWCs as the regression target that a
@@ -138,7 +138,7 @@ def run_neutu(mask_zyx: np.ndarray, out_swc: str, *, neutu: str = "neutu",
     """Skeletonize a mask with the NeuTu CLI. Returns the parsed SWC.
 
     ``neutu`` must be on PATH in an environment where NeuTu is built (it is *not*
-    installable alongside this package — see ``docs/skeletonization-comparison.md``
+    installable alongside this package — see ``docs/skeletonization.md``
     for why), so in practice this is invoked via a wrapper that activates that
     environment.
 

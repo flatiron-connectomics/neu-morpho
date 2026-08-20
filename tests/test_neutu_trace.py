@@ -409,7 +409,7 @@ def test_fix_borders_makes_adjacent_blocks_meet_at_the_face(bend):
     - **``fix_borders`` never makes the seam worse** than not using it.
 
     The measured values, and what they mean for ``join_radius_nm`` on curved
-    processes, are in docs/skeletonization-plan.md — not asserted here, so that a
+    processes, are in docs/skeletonization.md — not asserted here, so that a
     routing improvement shows up there rather than as a test failure.
     """
     r = TUBE_RADIUS

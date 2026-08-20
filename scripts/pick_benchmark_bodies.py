@@ -14,7 +14,7 @@ Two axes, both read from the production run's ``metrics.db`` (no volume access):
                      large arbors.
 
 Bodies 6308993 and 18052382 are pinned: every number in
-``docs/skeletonization-comparison.md`` is measured on them, and dropping them
+``docs/skeletonization.md`` is measured on them, and dropping them
 would strand that evidence.
 
 Bounding boxes come from the local stage-1 skeleton fragments
