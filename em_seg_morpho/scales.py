@@ -65,10 +65,18 @@ def _kvstore(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _read_key(kv: Mapping[str, Any], key: str) -> bytes | None:
-    import tensorstore as ts
+    """Read one metadata key through ``location``, never ``ts.KvStore.open`` directly.
 
-    res = ts.KvStore.open(dict(kv)).result().read(key).result()
-    return bytes(res.value) if res.state == "value" else None
+    Opening here was a fourth store-opening path that skipped both of the things
+    ``location`` exists to guarantee: the **per-prefix store cache**, so every call paid
+    a fresh open (visible as two S3 credential-provider log lines and a round trip per
+    ``read_scales``), and **``ensure_credentials``**, which makes it a latent 403 in any
+    process that has not otherwise bootstrapped (invariant 8). Same class of bug as the
+    one already fixed in ``source_metadata._read_key``.
+    """
+    from em_volume_tools.location import read_bytes
+
+    return read_bytes(kv, key)
 
 
 def _precomputed_scales(kv: Mapping[str, Any]) -> list[ScaleInfo]:
