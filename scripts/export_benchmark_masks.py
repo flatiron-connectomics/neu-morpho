@@ -60,7 +60,7 @@ def main() -> int:
     ap.add_argument("--overwrite", action="store_true")
     a = ap.parse_args()
 
-    from neu_morpho.scales import read_scales, scale_spec
+    from neu_vol import read_scales, scale_spec
     from neu_vol.backends.base import open_backend
     from neu_vol.logs import quiet_store_logs
 

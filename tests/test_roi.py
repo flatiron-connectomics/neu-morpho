@@ -1,4 +1,4 @@
-"""ROI block filtering and per-scale metadata.
+"""ROI block filtering.
 
 The property that matters for ROI: a restricted run must be a *prefix* of the
 full run. Same global grid, same block indices, same regions — so fragments and
@@ -218,52 +218,3 @@ def test_roi_restricts_index_scan(tmp_path):
     bodies = {r[0] for r in db.con.execute("SELECT body_id FROM bodies")}
     db.close()
     assert bodies == {7}
-
-
-# --------------------------------------------------------------------------- #
-# Scale metadata
-# --------------------------------------------------------------------------- #
-def test_read_scales_from_precomputed_info(tmp_path):
-    """Voxel size must come from each scale's own metadata, not 2**index.
-
-    The pyramid here downsamples 2x in x/y but never in z — the exact shape that
-    a 2**scale assumption gets wrong.
-    """
-    import json
-
-    from neu_morpho.scales import read_scales, scale_spec
-
-    root = tmp_path / "seg.precomputed"
-    root.mkdir()
-    info = {
-        "@type": "neuroglancer_multiscale_volume", "type": "segmentation",
-        "data_type": "uint64", "num_channels": 1,
-        "scales": [
-            {"key": "8_8_40", "resolution": [8, 8, 40], "size": [1024, 1024, 100],
-             "chunk_sizes": [[64, 64, 64]], "encoding": "raw"},
-            {"key": "16_16_40", "resolution": [16, 16, 40], "size": [512, 512, 100],
-             "chunk_sizes": [[64, 64, 64]], "encoding": "raw"},
-        ],
-    }
-    (root / "info").write_text(json.dumps(info))
-
-    scales = read_scales(str(root))
-    assert len(scales) == 2
-    # resolution/size are xyz in the file, zyx in ScaleInfo
-    assert scales[0].voxel_size == (40.0, 8.0, 8.0) and scales[0].shape == (100, 1024, 1024)
-    assert scales[1].voxel_size == (40.0, 16.0, 16.0) and scales[1].shape == (100, 512, 512)
-
-    # the real factor is (1, 2, 2) — NOT (2, 2, 2) as 2**index would give
-    assert scales[1].factor_from(scales[0]) == (1.0, 2.0, 2.0)
-
-    spec = scale_spec(str(root), 1)
-    assert spec["backend"] == "neuroglancer_precomputed" and spec["scale_index"] == 1
-
-
-def test_read_scales_rejects_sources_without_metadata(tmp_path):
-    from neu_morpho.scales import read_scales
-
-    bare = tmp_path / "nothing"
-    bare.mkdir()
-    with pytest.raises(ValueError):
-        read_scales(str(bare))

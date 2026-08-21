@@ -76,7 +76,8 @@ def source_levels(src, roi_voxel_size) -> list[tuple]:
     """
     from neu_vol.backends.base import open_backend
 
-    from ..scales import ScaleInfo, read_scales, scale_spec
+    from neu_lib import Frame, ScaleInfo
+    from neu_vol import read_scales, scale_spec
 
     try:
         return [(s, scale_spec(src, s.index)) for s in read_scales(src)]
@@ -85,8 +86,11 @@ def source_levels(src, roi_voxel_size) -> list[tuple]:
         shape = tuple(int(x) for x in open_backend(spec).shape)
         logger.info("no pyramid metadata at the source; treating it as a single level "
                     "at %s nm", tuple(roi_voxel_size))
+        # Origin zero: a source with no pyramid metadata states no offset either, and
+        # inventing one would be worse than assuming it starts where it says it does.
         return [(ScaleInfo(index=0, shape=shape,
-                           voxel_size=tuple(float(v) for v in roi_voxel_size)), spec)]
+                           frame=Frame(voxel_size_nm=tuple(
+                               float(v) for v in roi_voxel_size))), spec)]
 
 
 def scale_cost(src, roi, roi_voxel_size, *, block_shape=(256, 256, 256),

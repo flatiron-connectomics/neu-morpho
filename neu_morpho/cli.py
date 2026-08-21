@@ -78,7 +78,8 @@ from neu_morpho.ops import (export_roi_seg, index_segments, meshify,
                                skeletonize_segments)
 from neu_morpho.precomputed import link_subresources
 from neu_morpho.roi import parse_roi, scale_roi
-from neu_morpho.scales import describe, read_scales, scale_spec
+from neu_vol import read_scales, scale_spec
+from neu_vol import describe_scales as describe
 
 log = logging.getLogger("neu-morpho")
 
