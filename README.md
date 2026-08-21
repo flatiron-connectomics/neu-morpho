@@ -33,8 +33,9 @@ python -m pytest -q
 
 Python is pinned to **3.12**: `vol2mesh` and `dvidutils` are only built for py312
 on flyem-forge, and they are conda-only (no PyPI equivalent), so the conda
-environment — not pip — has to provide them. The combined spec lives one level
-up, at `neu-suite/environment.yml`. Skeleton *comparison* tooling
+environment — not pip — has to provide them. The
+[neu-suite](https://github.com/flatiron-connectomics/neu-suite) README describes how to
+build the shared environment. Skeleton *comparison* tooling
 (`skelcompare.py`) needs the `compare` extra: `networkx`, `plotly`, `skeletor`.
 
 ## Running it
