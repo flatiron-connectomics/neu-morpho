@@ -1,4 +1,4 @@
-"""Reading a published volume back, and the frustum geometry that renders it.
+"""Reading a published volume back.
 
 The round-trip tests are the reason this module exists in the package rather than in
 a script: ``precomputed.py`` writes both formats and nothing else verified that what
@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from neu_morpho.config import MeshConfig
-from neu_morpho.readback import frustum_mesh, read_body_mesh, read_body_skeleton
+from neu_morpho.readback import read_body_mesh, read_body_skeleton
 
 
 # --------------------------------------------------------------------------- #
@@ -142,62 +142,3 @@ def test_read_body_mesh_is_none_when_absent(tmp_path):
     vol = str(tmp_path / "segmentation")
     precomputed.write_mesh_info(vol + "/mesh", cfg)
     assert read_body_mesh(vol, 999) is None
-
-
-# --------------------------------------------------------------------------- #
-# frustum geometry
-# --------------------------------------------------------------------------- #
-def test_frustum_rings_have_the_node_radii_at_each_end():
-    v = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 10.0]])
-    fv, ff = frustum_mesh(v, np.array([[0, 1]]), np.array([3.0, 7.0]), sides=8)
-    assert fv.shape == (16, 3) and ff.shape == (16, 3)
-    assert ff.max() < len(fv)
-    ring0, ring1 = fv[:8], fv[8:]
-    np.testing.assert_allclose(ring0[:, 2], 0.0, atol=1e-9)
-    np.testing.assert_allclose(ring1[:, 2], 10.0, atol=1e-9)
-    np.testing.assert_allclose(np.linalg.norm(ring0[:, :2], axis=1), 3.0, atol=1e-9)
-    np.testing.assert_allclose(np.linalg.norm(ring1[:, :2], axis=1), 7.0, atol=1e-9)
-
-
-@pytest.mark.parametrize("direction", [
-    (1.0, 0.0, 0.0),          # along the axis the reference vector is swapped for
-    (0.0, 1.0, 0.0),
-    (1.0, 1.0, 1.0),
-    (-3.0, 0.5, 2.0),
-])
-def test_frustum_rings_are_perpendicular_to_the_edge(direction):
-    """The per-edge basis must stay orthonormal in every orientation.
-
-    The reference direction is swapped near x to keep the cross product from
-    degenerating; if that guard were wrong, the ring would collapse or tilt only for
-    edges pointing that way — a defect no single-orientation test would find.
-    """
-    d = np.asarray(direction, float)
-    v = np.array([[0.0, 0.0, 0.0], d * 9.0])
-    fv, _ = frustum_mesh(v, np.array([[0, 1]]), np.array([2.0, 2.0]), sides=6)
-    axis = d / np.linalg.norm(d)
-    ring = fv[:6]
-    assert np.abs(ring @ axis).max() < 1e-9, "ring is not perpendicular to the edge"
-    np.testing.assert_allclose(np.linalg.norm(ring, axis=1), 2.0, atol=1e-9)
-
-
-def test_frustum_drops_zero_length_edges_without_nans():
-    v = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 4.0]])
-    fv, ff = frustum_mesh(v, np.array([[0, 1], [1, 2]]), np.ones(3), sides=4)
-    assert len(fv) == 8, "the degenerate edge should contribute nothing"
-    assert not np.isnan(fv).any() and ff.max() < len(fv)
-
-
-def test_frustum_handles_an_empty_skeleton():
-    fv, ff = frustum_mesh(np.zeros((0, 3)), np.zeros((0, 2), int), np.zeros(0))
-    assert fv.shape == (0, 3) and ff.shape == (0, 3)
-
-
-def test_frustum_face_indices_stay_within_each_edges_own_block():
-    """Faces must never bridge two edges: the base offset is per-edge, not global."""
-    v = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 5.0], [0.0, 5.0, 5.0]])
-    sides = 4
-    fv, ff = frustum_mesh(v, np.array([[0, 1], [1, 2]]), np.ones(3), sides=sides)
-    block = ff // (2 * sides)
-    assert (block.min(axis=1) == block.max(axis=1)).all(), \
-        "a triangle spans two frusta; the per-edge offset is wrong"

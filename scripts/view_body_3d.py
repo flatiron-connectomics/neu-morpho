@@ -27,8 +27,9 @@ import sys
 import numpy as np
 
 sys.path.insert(0, __file__.rsplit("/scripts/", 1)[0])
+from neu_lib import frustum_mesh                               # noqa: E402
 from neu_morpho.readback import (                              # noqa: E402
-    frustum_mesh, read_body_mesh, read_body_skeleton)
+    read_body_mesh, read_body_skeleton)
 
 # Palette slots 1 and 2 of the validated categorical ramp: a colourblind-safe pair.
 MESH_COLOR = "#2a78d6"
