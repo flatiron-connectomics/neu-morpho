@@ -21,7 +21,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Sibling packages, not on PyPI. Both are public, so no token is needed.
+      # Sibling packages, not on PyPI. All are public, so no token is needed.
+      - uses: actions/checkout@v7
+        with:
+          repository: flatiron-connectomics/neu-lib
+          path: .siblings/neu-lib
+
       - uses: actions/checkout@v7
         with:
           repository: flatiron-connectomics/blockrun
@@ -41,7 +46,7 @@ jobs:
         # binaries (tensorstore, h5py, numpy) from PyPI and invites the ABI mismatch
         # the environment file exists to avoid.
         run: |
-          pip install --no-deps ./.siblings/blockrun ./.siblings/neu-vol
+          pip install --no-deps ./.siblings/neu-lib ./.siblings/blockrun ./.siblings/neu-vol
           pip install --no-deps -e .
 
       - name: Show what actually got installed
