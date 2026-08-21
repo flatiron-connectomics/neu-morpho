@@ -1,0 +1,53 @@
+"""Per-body morphology measurement, over PUBLISHED output.
+
+An analysis layer, not a pipeline stage: it reads meshes and skeletons that have already
+been written and turns them into tables. Deliberately not a `--stages` entry, because it
+measures published volumes rather than producing them, and the thing being measured is
+often not the thing this pipeline produced.
+
+The driving comparison is Megaphragma against the Drosophila male-CNS — non-somatic
+volume, neurite diameter and cable length, controlling for denucleation — and one property
+of it shapes the whole interface: **the two cohorts are not measured the same way.**
+Male-CNS has `soma` and `nucleus` semantic labels, so its control is a *mask*. Megaphragma
+has none, but its nucleated bodies are annotated, so its control is a *cohort selection*
+(anucleate cells only). Both are legitimate; the risk is that the difference goes
+unrecorded and the two columns get compared as though they were the same measurement.
+Hence every row carries an explicit ``variant``, and the table is keyed
+``(dataset, body_id, variant)``.
+
+Nothing here imports a store. Reading is `neu_morpho.readback` and `neu_vol`; the region
+predicates that turn a compartment into an ``inside()`` are `neu_lib`.
+"""
+
+from .metrics import (cable_length_nm, diameter_stats, frustum_area_nm2,
+                      frustum_volume_nm3, measure_skeleton, topology,
+                      weighted_quantile)
+from .sweep import (DEFAULT_BLOCK, DEFAULT_VOXEL_NM, SweepTotals, bin_to_nodes,
+                    blob_signal, blocks_from_mask, cable_shares, count_labels,
+                    log_bin_edges, mean_cross_section, node_radii, roi_block_mask,
+                    weighted_histogram)
+
+__all__ = [
+    # per-skeleton metrics
+    "cable_length_nm",
+    "diameter_stats",
+    "frustum_area_nm2",
+    "frustum_volume_nm3",
+    "measure_skeleton",
+    "topology",
+    "weighted_quantile",
+    # the voxel-counting sweep
+    "DEFAULT_BLOCK",
+    "DEFAULT_VOXEL_NM",
+    "SweepTotals",
+    "bin_to_nodes",
+    "blob_signal",
+    "blocks_from_mask",
+    "cable_shares",
+    "count_labels",
+    "log_bin_edges",
+    "mean_cross_section",
+    "node_radii",
+    "roi_block_mask",
+    "weighted_histogram",
+]

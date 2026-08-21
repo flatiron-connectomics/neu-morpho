@@ -31,7 +31,8 @@ from neu_vol import location
 __all__ = ["read_body_skeleton", "read_body_mesh"]
 
 
-def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"):
+def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton",
+                       *, require_radii: bool = True):
     """``(vertices_xyz_nm, edges, radii_nm)`` for one body, or ``None`` if absent.
 
     Vertices come back in the order the format **stores**, which is xyz — matching
@@ -45,6 +46,13 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
     one value per vertex, filled with the sentinel ``-1``. That is finite and the
     right length, so it survives every structural check and then renders as an
     inverted tube. Negative radii are the signal.
+
+    ``require_radii=False`` returns ``radii_nm=None`` instead of raising, for a source
+    that legitimately publishes **centrelines only**. FlyEM's male-CNS is one: its
+    skeleton ``info`` is bare ``{"@type": "neuroglancer_skeletons"}`` with no
+    ``vertex_attributes``, so every body comes back all -1. Cable length and topology
+    are still there; calibre is not, and has to come from elsewhere. Keep the default
+    ``True`` — on a volume this package wrote, missing radii mean something went wrong.
     """
     from osteoid import Skeleton
 
@@ -55,6 +63,12 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
     vertices = np.asarray(skel.vertices, dtype=float)
     raw = getattr(skel, "radii", None)
     radii = None if raw is None else np.asarray(raw, dtype=float)
+    edges = np.asarray(skel.edges, dtype=np.int64).reshape(-1, 2)
+    absent = (radii is None or len(radii) != len(vertices)
+              or (len(radii) and not np.isfinite(radii).all())
+              or (len(radii) and radii.min() < 0))
+    if absent and not require_radii:
+        return vertices, edges, None
     if radii is None or len(radii) != len(vertices):
         raise ValueError(
             f"body {body_id}: skeleton has no usable 'radius' attribute "
@@ -66,8 +80,9 @@ def read_body_skeleton(volume: str, body_id: int, skeleton_dir: str = "skeleton"
         raise ValueError(
             f"body {body_id}: skeleton has negative radii (min {radii.min():g}). "
             f"All -1 means {volume}/{skeleton_dir}/info declares no 'radius' "
-            f"vertex attribute, so there is nothing to read.")
-    return vertices, np.asarray(skel.edges, dtype=np.int64).reshape(-1, 2), radii
+            f"vertex attribute, so there is nothing to read. Pass "
+            f"require_radii=False for a source that publishes centrelines only.")
+    return vertices, edges, radii
 
 
 def read_body_mesh(volume: str, body_id: int, lod: int | None = None,

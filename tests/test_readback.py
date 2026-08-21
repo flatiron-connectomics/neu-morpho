@@ -142,3 +142,31 @@ def test_read_body_mesh_is_none_when_absent(tmp_path):
     vol = str(tmp_path / "segmentation")
     precomputed.write_mesh_info(vol + "/mesh", cfg)
     assert read_body_mesh(vol, 999) is None
+
+
+def test_require_radii_false_returns_a_centreline(tmp_path):
+    """A source may legitimately publish centrelines only — FlyEM's male-CNS skeleton
+    `info` is a bare {"@type": "neuroglancer_skeletons"} with no vertex_attributes, so
+    every body's radii arrive as the -1 sentinel. Cable length and topology survive;
+    calibre does not, and the caller has to know that rather than get -1 silently.
+    """
+    import numpy as np
+    from osteoid import Skeleton as Osteoid
+
+    from neu_morpho import readback
+
+    vertices = np.array([[0.0, 0, 0], [100.0, 0, 0]], dtype=np.float32)
+    edges = np.array([[0, 1]], dtype=np.uint32)
+    blob = Osteoid(vertices=vertices, edges=edges,
+                   radii=np.full(2, -1.0, dtype=np.float32),
+                   vertex_types=np.zeros(2, dtype=np.uint8)).to_precomputed()
+    root = tmp_path / "vol"
+    (root / "skeleton").mkdir(parents=True)
+    (root / "skeleton" / "7").write_bytes(blob)
+
+    with pytest.raises(ValueError, match="require_radii=False"):
+        readback.read_body_skeleton(str(root), 7)
+
+    v, e, r = readback.read_body_skeleton(str(root), 7, require_radii=False)
+    assert r is None
+    assert len(v) == 2 and e.tolist() == [[0, 1]]

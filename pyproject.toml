@@ -42,6 +42,14 @@ neu-morpho = "neu_morpho.cli:main"
 # does the actual reading, needs nothing beyond the core deps — only the rendering
 # is optional.
 viz = ["plotly"]  # self-contained interactive 3D HTML
+# Per-body measurement over PUBLISHED output (neu_morpho/measure/). An analysis layer,
+# so its deps are optional: `metrics.py` is numpy only and the pipeline needs none of
+# this. pandas/pyarrow are imported INSIDE functions, so `import neu_morpho` does not
+# pay for them and the CLI stays fast — the same rule neu-mark's `cli` follows.
+measure = [
+    "pandas",   # cohort and result tables
+    "pyarrow",  # parquet, which unlike csv round-trips a nullable integer column
+]
 # The comparison harness (neu_morpho/skelcompare.py, scripts/compare_skeletons*).
 # plotly is repeated rather than pulled in via a self-referential `neu-morpho[viz]`
 # extra: the two groups are installed independently and this project installs with
