@@ -15,6 +15,15 @@ dask-job-logs/
 views/
 *_3d.html
 
+# Output of scripts/compare_skeletons.py (its default --out). 35 files and 81 MB of it
+# were committed once, because nothing here ignored it — regenerate rather than track.
+skel_compare_out/
+
+# Output of scripts/run_skel_benchmark.py and the mask exporter. Benchmark masks are
+# ~450 MB each and belong on bulk storage.
+skel_benchmark_out/
+benchmark_masks/
+
 # Site-specific dask configs and dataset allowlists live here, untracked. The
 # LEADING SLASH is load-bearing: a bare `configs/` matches at any depth and would
 # also swallow neu_morpho/configs/, so the bundled configs would silently never
