@@ -12,27 +12,19 @@ if the number actually comes from the data, so this reads it:
 
 Scales are ordered finest-first, so index 0 is full resolution and matches
 ``scale_index`` in a precomputed spec.
+
+The :class:`~neu_lib.ScaleInfo` type itself lives in ``neu_lib``, since it is just a
+record and the whole suite names it. **The reading stays here for now** — it opens a
+store, which ``neu_lib`` deliberately cannot do — but it belongs in ``neu-vol``, where
+volume metadata lives, and moving it is the next stage of the restructure.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-
-@dataclass(frozen=True)
-class ScaleInfo:
-    """One pyramid level, in canonical zyx."""
-
-    index: int
-    shape: tuple[int, int, int]              # voxels (z, y, x)
-    voxel_size: tuple[float, float, float]   # nm (z, y, x)
-    key: str = ""                            # precomputed scale key, if any
-
-    def factor_from(self, finest: "ScaleInfo") -> tuple[float, float, float]:
-        """Full-res voxels per voxel of this scale (NOT assumed to be 2**index)."""
-        return tuple(self.voxel_size[a] / finest.voxel_size[a] for a in range(3))
+from neu_lib import ScaleInfo
 
 
 def read_scales(spec: str | Mapping[str, Any]) -> list[ScaleInfo]:

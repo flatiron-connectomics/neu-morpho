@@ -29,8 +29,9 @@ dependencies = [
     "osteoid",         # Skeleton class, split out of kimimaro
     "DracoPy",         # Draco codec binding used by vol2mesh.multires
     "trimesh",         # vol2mesh.multires LOD slicing (trim_mesh_to_box)
-    "neu-vol", # segmentation-array I/O
-    "blockrun",     # dask/SLURM chunked-map substrate
+    "neu-lib",         # ScaleInfo. numpy-only.
+    "neu-vol",         # segmentation-array I/O
+    "blockrun",        # dask/SLURM chunked-map substrate
 ]
 
 [project.scripts]
