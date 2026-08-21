@@ -133,7 +133,7 @@ skeletons written *inside* it, so a single neuroglancer layer carries all three.
 It may be a local path or an `s3://` URL.
 
 ```
-precomputed://file:///mnt/ceph/.../morpho/segmentation
+precomputed://file:///path/to/morpho/segmentation
 precomputed://s3://bucket/sample3/segmentation
 ```
 
@@ -149,7 +149,7 @@ and is required when `--dst` is remote.
 
 > **`--dst` changed meaning.** It used to be the run root, with the volume at
 > `<dst>/segmentation`. It is now the volume itself. An existing invocation
-> passing `--dst /mnt/ceph/.../morpho` will publish to `.../morpho` directly
+> passing `--dst /path/to/morpho` will publish to `.../morpho` directly
 > rather than `.../morpho/segmentation`. Add `/segmentation` to keep the old
 > layout — the work dir then defaults to the old run root.
 
