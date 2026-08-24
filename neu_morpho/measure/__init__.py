@@ -27,6 +27,8 @@ from .skeletons import sweep_skeletons
 from .metrics import (cable_length_nm, diameter_stats, frustum_area_nm2,
                       frustum_volume_nm3, measure_skeleton, topology,
                       weighted_quantile)
+from .tables import (compare, load_bodies, load_segment_properties,
+                     log_histogram, summarize, write_table)
 from .sweep import (DEFAULT_BLOCK, DEFAULT_VOXEL_NM, SweepTotals, bin_to_nodes,
                     blob_signal, blocks_from_mask, cable_shares, count_labels,
                     log_bin_edges, mean_cross_section, node_radii, roi_block_mask,
@@ -48,6 +50,13 @@ __all__ = [
     "sweep_compartments",
     "verify_compartments",
     "joint_counts",
+    # tidy tables for cohort selection (pandas, from the `measure` extra)
+    "load_bodies",
+    "load_segment_properties",
+    "summarize",
+    "compare",
+    "log_histogram",
+    "write_table",
     "semantic_label_names",
     "somatic_labels",
     # the voxel-counting sweep
