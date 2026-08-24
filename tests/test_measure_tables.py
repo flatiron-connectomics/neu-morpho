@@ -90,7 +90,7 @@ def test_tags_become_namespaced_columns(tmp_path):
     df = tables.load_segment_properties(root, "tags_property").set_index("body_id")
     assert df.loc[1, "superclass"] == "ol" and df.loc[1, "somaSide"] == "L"
     assert df.loc[2, "somaSide"] == "R"
-    assert df.loc[2, "tag"] == "cropped"        # a bare tag keeps its own column
+    assert df.loc[2, "tags_cropped"] and not df.loc[1, "tags_cropped"]
 
 
 def test_several_sources_are_merged_on_body_id(tmp_path):
@@ -137,3 +137,64 @@ def test_log_histogram_conserves_weight():
     assert h["weight"].sum() == pytest.approx(7.0)          # under+over included
     assert h.iloc[0]["weight"] == pytest.approx(1.0)        # underflow
     assert h.iloc[-1]["weight"] == pytest.approx(4.0)       # overflow
+
+
+def test_merge_keeps_boolean_flags_boolean():
+    """A plain merge turns bool into object, and `~object` is a NUMERIC bitwise NOT.
+
+    `~True` is -2 and `~False` is -1, both truthy, so `df[~df['flag']]` selects
+    everything with no error. Measured on real data: three stacked exclusions left the
+    row count unchanged, which is why this is a helper and not a note in a docstring.
+    """
+    import pandas as pd
+
+    bodies = pd.DataFrame({"body_id": [1, 2, 3], "v": [1.0, 2.0, 3.0]})
+    props = pd.DataFrame({"body_id": [1, 2], "flag": [True, False]})
+
+    naive = bodies.merge(props, on="body_id", how="left")
+    assert naive["flag"].dtype == object                    # the trap
+    # A bare `~` on the NaN-bearing object column raises, which is survivable.
+    with pytest.raises(TypeError):
+        _ = ~naive["flag"]
+    # The DEFENSIVE idiom is the dangerous one: fillna leaves pure Python bools in an
+    # object column, and `~` on those is ARITHMETIC, not logical.
+    inverted = ~naive["flag"].fillna(False)
+    assert list(inverted) == [-2, -1, -1]          # not [False, True, True]
+    assert all(bool(v) for v in inverted)          # every value truthy, so no exclusion
+
+    good = tables.merge_properties(bodies, props)
+    assert pd.api.types.is_bool_dtype(good["flag"])
+    assert len(good[~good["flag"]]) == 2                    # body 2 (False) and 3 (absent)
+    assert list(good.loc[good["flag"], "body_id"]) == [1]
+
+
+def test_bare_tags_become_one_boolean_column_each(tmp_path):
+    """A vocabulary with no `namespace:value` convention is not mutually exclusive, so
+    there is no 'first' tag to prefer and keeping only one discards the rest."""
+    root = str(tmp_path / "src")
+    _props(root, "segment_properties",
+           {"@type": "neuroglancer_segment_properties",
+            "inline": {"ids": ["1", "2"],
+                       "properties": [{"id": "tags", "type": "tags",
+                                       "tags": ["side-r", "fragment", "nucleated"],
+                                       "values": [[0, 1], [2]]}]}})
+    df = tables.load_segment_properties(root, "segment_properties").set_index("body_id")
+    assert df.loc[1, "tags_side_r"] and df.loc[1, "tags_fragment"]
+    assert not df.loc[1, "tags_nucleated"]
+    assert df.loc[2, "tags_nucleated"] and not df.loc[2, "tags_side_r"]
+    assert df.loc[1, "tags_all"] == ("side-r", "fragment")   # a TUPLE, so it is hashable
+    assert df["tags_all"].nunique() == 2
+
+
+def test_multi_valued_namespace_column_is_hashable(tmp_path):
+    root = str(tmp_path / "src")
+    _props(root, "p",
+           {"@type": "neuroglancer_segment_properties",
+            "inline": {"ids": ["1"],
+                       "properties": [{"id": "tags", "type": "tags",
+                                       "tags": ["col:A", "col:B"],
+                                       "values": [[0, 1]]}]}})
+    df = tables.load_segment_properties(root, "p")
+    assert df.loc[0, "col"] == "A"                 # first, for the scalar column
+    assert df.loc[0, "col_all"] == ("A", "B")
+    assert df["col_all"].nunique() == 1            # would raise on a list

@@ -101,6 +101,13 @@ def _diameter_nm(volume_um3, cable_um):
     return 2.0 * np.sqrt(area / np.pi)
 
 
+def _slug(tag: str) -> str:
+    """A tag turned into a column-name-safe suffix."""
+    import re
+
+    return re.sub(r"[^0-9a-zA-Z]+", "_", tag).strip("_").lower() or "tag"
+
+
 def load_segment_properties(base: str, *sources: str):
     """Wide table of every inline property across one or more properties sources.
 
@@ -113,12 +120,22 @@ def load_segment_properties(base: str, *sources: str):
     import pandas as pd
 
     from neu_vol import location
+    from neu_vol.logs import quiet_reads
 
     frames = []
     for sub in sources:
-        inline = location.read_json(base, sub, "info")["inline"]
+        # Reading a properties source opens a store, and on a public bucket the
+        # credential chain logs at ERROR severity before succeeding anonymously. From a
+        # notebook's point of view THIS is the entry point, so it filters itself rather
+        # than expecting the caller to remember; `neu_vol.logs.reads_quiet = False`
+        # opts out.
+        with quiet_reads():
+            inline = location.read_json(base, sub, "info")["inline"]
         ids = [int(i) for i in inline["ids"]]
-        frame = pd.DataFrame({"body_id": ids})
+        # Columns are accumulated and the frame built ONCE. Assigning them one at a time
+        # fragments the block manager and pandas warns per assignment — which at 482 tags
+        # is hundreds of warnings and a genuinely slow frame, not just noise.
+        cols: dict[str, Any] = {"body_id": ids}
         for prop in inline["properties"]:
             kind, pid = prop.get("type"), prop.get("id", "value")
             if kind == "tags":
@@ -128,28 +145,68 @@ def load_segment_properties(base: str, *sources: str):
                 # namespace first seen on a later row short by however many rows preceded
                 # it, and pandas then rejects the frame — which is the good outcome; a
                 # silently misaligned column would attribute tags to the wrong bodies.
-                parsed = []
+                parsed, bare = [], []
                 for row in rows:
                     seen: dict[str, list[str]] = {}
+                    plain: list[str] = []
                     for tag in row:
                         ns, sep, val = tag.partition(":")
-                        seen.setdefault(ns if sep else "tag", []).append(
-                            val if sep else tag)
+                        if sep:
+                            seen.setdefault(ns, []).append(val)
+                        else:
+                            plain.append(tag)
                     parsed.append(seen)
+                    bare.append(plain)
                 for ns in sorted({k for s in parsed for k in s}):
-                    col = [s.get(ns, []) for s in parsed]
-                    frame[ns] = [v[0] if v else None for v in col]
+                    col = [tuple(s.get(ns, ())) for s in parsed]
+                    cols[ns] = [v[0] if v else None for v in col]
                     if any(len(v) > 1 for v in col):
-                        frame[f"{ns}_all"] = col
+                        # TUPLES, not lists. A list-valued column is unhashable, so
+                        # `nunique`, `groupby` and `value_counts` all raise on it — which
+                        # makes the column unusable for exactly the grouping this table
+                        # exists to support.
+                        cols[f"{ns}_all"] = col
+                if any(bare):
+                    # A vocabulary with no namespace convention (`side-r`, `fragment`)
+                    # gets one BOOLEAN column per tag. Keeping only the first, as a
+                    # namespace column does, silently discards the rest — and the tags
+                    # are not mutually exclusive, so there is no first to prefer.
+                    cols[f"{pid}_all"] = [tuple(b) for b in bare]
+                    for tag in sorted({t for b in bare for t in b}):
+                        cols[f"{pid}_{_slug(tag)}"] = [tag in b for b in bare]
             else:
-                frame[pid] = prop["values"]
-        frames.append(frame)
+                cols[pid] = prop["values"]
+        frames.append(pd.DataFrame(cols))
 
     if not frames:
         raise ValueError("no properties sources given")
     out = frames[0]
     for frame in frames[1:]:
         out = out.merge(frame, on="body_id", how="outer")
+    return out
+
+
+def merge_properties(bodies, props, *, how: str = "left"):
+    """Join properties onto a bodies table, keeping boolean columns BOOLEAN.
+
+    Use this rather than ``bodies.merge(props, on='body_id')``. A plain merge widens any
+    ``bool`` column to ``object`` wherever a body has no properties row, and then ``~`` on
+    that column is **arithmetic, not logical**: ``~True`` is ``-2``, ``~False`` is ``-1``.
+    A bare ``~`` raises on the NaN, which is survivable — but the *defensive* idiom,
+    ``~col.fillna(False)``, does not raise and yields integers, so the resulting mask does
+    not mean what it reads as. Measured on real data: three stacked exclusions left the
+    row count unchanged at 16,858 where the correct answer was 6,570.
+
+    A body with no properties row gets ``False`` for every flag, which is the right
+    reading — an absent record asserts no tags.
+    """
+    import pandas as pd
+
+    flags = [c for c in props.columns
+             if c != "body_id" and pd.api.types.is_bool_dtype(props[c])]
+    out = bodies.merge(props, on="body_id", how=how)
+    for col in flags:
+        out[col] = out[col].fillna(False).astype(bool)
     return out
 
 
