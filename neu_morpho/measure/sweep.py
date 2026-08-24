@@ -52,6 +52,15 @@ def roi_block_mask(roi: np.ndarray, labels: Sequence[int], factor: int,
     compartment mask, so a process near its boundary has voxels just outside; a
     false-positive block costs one read that finds nothing, while a false negative
     silently truncates a body. Same asymmetry as the occupancy prefilter's.
+
+    Dilation must NOT wrap. An earlier version grew the set with ``np.roll``, which is
+    periodic, so an occupied block on one face marked its counterpart on the *opposite*
+    face — on a small grid that is a large fraction of the total. It never corrupted a
+    result, because a false positive only costs a read that finds nothing, which is
+    exactly why it could have gone unnoticed: the tell was a coarser scale reporting
+    *more* blocks than a finer one, against the strictly-nested behaviour the occupancy
+    prefilter is known to have. ``neu_morpho.occupancy`` uses ``binary_dilation`` and
+    was always right; this now matches it.
     """
     if factor < 1:
         raise ValueError(f"factor must be >= 1, got {factor}")
@@ -61,12 +70,10 @@ def roi_block_mask(roi: np.ndarray, labels: Sequence[int], factor: int,
     grid = padded.reshape(padded.shape[0] // factor, factor,
                           padded.shape[1] // factor, factor,
                           padded.shape[2] // factor, factor).any(axis=(1, 3, 5))
-    for _ in range(max(0, int(dilate))):
-        out = grid.copy()
-        for axis in range(3):
-            out |= np.roll(grid, 1, axis=axis)
-            out |= np.roll(grid, -1, axis=axis)
-        grid = out
+    n = max(0, int(dilate))
+    if n:
+        from scipy.ndimage import binary_dilation
+        grid = binary_dilation(grid, iterations=n)
     return grid
 
 

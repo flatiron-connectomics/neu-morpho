@@ -19,6 +19,11 @@ Nothing here imports a store. Reading is `neu_morpho.readback` and `neu_vol`; th
 predicates that turn a compartment into an ``inside()`` are `neu_lib`.
 """
 
+from .compartments import (joint_counts, semantic_label_names,
+                           somatic_labels, sweep_compartments,
+                           verify_compartments)
+from .driver import resolve_keep, sweep_volumes
+from .skeletons import sweep_skeletons
 from .metrics import (cable_length_nm, diameter_stats, frustum_area_nm2,
                       frustum_volume_nm3, measure_skeleton, topology,
                       weighted_quantile)
@@ -36,6 +41,15 @@ __all__ = [
     "measure_skeleton",
     "topology",
     "weighted_quantile",
+    # the block-mapped driver (the only part that opens a store)
+    "resolve_keep",
+    "sweep_volumes",
+    "sweep_skeletons",
+    "sweep_compartments",
+    "verify_compartments",
+    "joint_counts",
+    "semantic_label_names",
+    "somatic_labels",
     # the voxel-counting sweep
     "DEFAULT_BLOCK",
     "DEFAULT_VOXEL_NM",

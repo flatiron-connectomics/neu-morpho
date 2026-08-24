@@ -30,9 +30,23 @@ def test_every_subcommand_is_reachable_from_the_parser():
     parser = cli.build_parser()
     subs = next(a for a in parser._actions
                 if isinstance(a, argparse._SubParsersAction)).choices
-    assert set(subs) == {"run", "progress", "run-report"}
+    assert set(subs) == {"run", "progress", "measure", "run-report"}
     for name, sub in subs.items():
         assert sub.format_usage().strip(), f"{name} renders no usage line"
+
+
+def test_every_measure_subcommand_is_reachable():
+    """`measure` has its own nested group, so the pin above does not cover it."""
+    from neu_morpho import cli
+
+    parser = cli.build_parser()
+    top = next(a for a in parser._actions
+               if isinstance(a, argparse._SubParsersAction)).choices
+    inner = next(a for a in top["measure"]._actions
+                 if isinstance(a, argparse._SubParsersAction)).choices
+    assert set(inner) == {"volumes", "skeletons", "compartments", "progress"}
+    for name, sub in inner.items():
+        assert sub.format_usage().strip(), f"measure {name} renders no usage line"
 
 
 def test_run_validation_still_reports_against_the_run_subparser():

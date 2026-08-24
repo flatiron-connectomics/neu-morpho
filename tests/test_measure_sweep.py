@@ -40,6 +40,24 @@ def test_dilation_adds_the_six_neighbours():
     assert np.all(grown[bare])                   # and it never drops one
 
 
+def test_dilation_does_not_wrap_around_the_volume():
+    """A corner block has three face neighbours, not six.
+
+    The interior fixture above passes under a periodic dilation too, which is how a
+    wrapping `np.roll` implementation survived: it marked the block on the OPPOSITE
+    face as occupied. Harmless per-block — a false positive is one empty read — but it
+    inflates the block count, and on a small grid it inflates it a lot. The observable
+    symptom is a coarser occupancy scale reporting more blocks than a finer one.
+    """
+    roi = np.zeros((12, 12, 12), dtype=np.uint64)
+    roi[0, 0, 0] = 1
+    grown = roi_block_mask(roi, [1], factor=4, dilate=1)
+    assert grown.shape == (3, 3, 3)
+    assert grown.sum() == 4                      # itself + 3 in-bounds face neighbours
+    for far in ((2, 0, 0), (0, 2, 0), (0, 0, 2)):
+        assert not grown[far], f"dilation wrapped to the opposite face at {far}"
+
+
 def test_only_the_named_labels_count():
     roi = np.zeros((4, 4, 4), dtype=np.uint64)
     roi[0, 0, 0] = 1        # brain

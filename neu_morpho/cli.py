@@ -5,6 +5,7 @@ The command-line entry point for this package.
     neu-morpho run ...              # the pipeline
     neu-morpho progress <work-dir>  # live per-stage counts
     neu-morpho run-report <work-dir># self-contained HTML summary
+    neu-morpho measure ...          # morphometry over PUBLISHED output
 
 Run ``run`` ON A WORKSTATION, in a session that outlives your terminal: it starts a
 dask cluster whose workers are SLURM jobs (dask submits the sbatch itself via
@@ -70,6 +71,7 @@ from datetime import datetime
 
 from blockrun import bundled_configs, load_config
 
+from neu_morpho.allowlist import load_allowlist
 from neu_morpho.config import MeshConfig, OutputConfig, SkeletonConfig
 from neu_morpho.metrics_db import MetricsDB
 from neu_morpho.ops.export_roi_seg import DEFAULT_COPY_BLOCK as SEG_COPY_BLOCK
@@ -242,6 +244,106 @@ def build_parser() -> argparse.ArgumentParser:
                    help="sample the manifests twice this far apart to estimate a rate")
     q.set_defaults(func=_cmd_progress)
 
+    # --- measure ------------------------------------------------------------
+    # A SEPARATE command, not a `run --stages` entry: these read published output and
+    # write tables, where `run` reads a source and writes a volume.
+    m = sub.add_parser("measure", help="per-body morphometry over published output",
+                       description=_MEASURE_DESC,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    msub = m.add_subparsers(dest="measure_command", required=True)
+
+    v = msub.add_parser("volumes", help="per-body voxel count and volume",
+                        description=_MEASURE_VOLUMES_DESC,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
+    v.add_argument("--src", required=True, help="segmentation to read (path or URL)")
+    v.add_argument("--db", required=True, help="metrics DB to accumulate into")
+    v.add_argument("--level", type=int, default=2,
+                   help="pyramid level to read. Its voxel size comes from the source "
+                        "metadata, never from 2**level")
+    v.add_argument("--block", type=int, default=512, help="cube block edge, in voxels")
+    v.add_argument("--keep", action="append", default=None, metavar="SRC",
+                   help="restrict which bodies are RECORDED (not which blocks are read). "
+                        "A file of ids, or a neuroglancer_segment_properties URL. "
+                        "Repeatable; the id sets are unioned")
+    v.add_argument("--with-bbox", action="store_true",
+                   help="also record each body's bounding box. Roughly 10x the cost on a "
+                        "dense block, and only worth it if something reads the bbox")
+    v.add_argument("--roi", default=None, help="z0,y0,x0,z1,y1,x1 in --level voxels")
+    v.add_argument("--background", type=int, default=0,
+                   help="label to treat as background. Annotation tools that number from "
+                        "0 make this 1")
+    v.add_argument("--config", action="append", default=None, metavar="NAME_OR_PATH")
+    v.add_argument("--workers", type=int, default=4)
+    v.add_argument("--serial", action="store_true", help="no dask; run in this process")
+    v.add_argument("--no-resume", action="store_true")
+    v.add_argument("--dry-run", action="store_true")
+    v.add_argument("--store-logs", action="store_true")
+    v.set_defaults(func=_cmd_measure_volumes)
+
+    k = msub.add_parser("skeletons", help="cable length and topology per body",
+                        description=_MEASURE_SKEL_DESC,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
+    k.add_argument("--volume", required=True,
+                   help="volume the skeletons live under (path or URL)")
+    k.add_argument("--db", required=True)
+    k.add_argument("--skeleton-dir", default="skeleton",
+                   help="subdirectory named by the volume's info 'skeletons' key")
+    k.add_argument("--bodies", action="append", required=True, metavar="SRC",
+                   help="which bodies to measure: an id file or a "
+                        "neuroglancer_segment_properties URL. Repeatable, unioned")
+    k.add_argument("--require-radii", action="store_true",
+                   help="fail on a body whose skeleton carries no radius attribute, "
+                        "instead of recording NaN diameters. Use on a volume this "
+                        "package wrote, where missing radii mean something went wrong")
+    k.add_argument("--batch", type=int, default=200, help="bodies per task")
+    k.add_argument("--threads", type=int, default=8, help="concurrent reads per task")
+    k.add_argument("--config", action="append", default=None, metavar="NAME_OR_PATH")
+    k.add_argument("--workers", type=int, default=4)
+    k.add_argument("--serial", action="store_true")
+    k.add_argument("--no-resume", action="store_true")
+    k.add_argument("--no-retry-failed", action="store_true",
+                   help="treat a previously failed body as done")
+    k.add_argument("--dry-run", action="store_true")
+    k.add_argument("--store-logs", action="store_true")
+    k.set_defaults(func=_cmd_measure_skeletons)
+
+    cm = msub.add_parser("compartments", help="per-body volume split by semantic label",
+                         description=_MEASURE_COMPARTMENTS_DESC,
+                         formatter_class=argparse.RawDescriptionHelpFormatter)
+    cm.add_argument("--src", required=True, help="segmentation")
+    cm.add_argument("--semantic", required=True,
+                    help="semantic label volume, on the same grid at --level")
+    cm.add_argument("--db", required=True)
+    cm.add_argument("--level", type=int, default=2, help="segmentation level to read")
+    cm.add_argument("--semantic-level", type=int, default=None,
+                    help="semantic level with the SAME voxel size; found by matching the "
+                         "voxel size if omitted, which is safer than assuming an index")
+    cm.add_argument("--block", type=int, default=512)
+    cm.add_argument("--keep", action="append", default=None, metavar="SRC")
+    cm.add_argument("--occupancy-scale", type=int, default=None, metavar="LEVEL",
+                    help="restrict to blocks non-empty at this coarse level OF THE "
+                         "SEGMENTATION. Safe in a way an anatomical ROI is not, and "
+                         "--verify proves afterwards that nothing was missed")
+    cm.add_argument("--occupancy-dilate", type=int, default=1)
+    cm.add_argument("--roi", default=None)
+    cm.add_argument("--background", type=int, default=0)
+    cm.add_argument("--verify", action="store_true",
+                    help="after the run, check each body's per-label sum against the "
+                         "total the volume sweep recorded")
+    cm.add_argument("--config", action="append", default=None, metavar="NAME_OR_PATH")
+    cm.add_argument("--workers", type=int, default=4)
+    cm.add_argument("--serial", action="store_true")
+    cm.add_argument("--no-resume", action="store_true")
+    cm.add_argument("--dry-run", action="store_true")
+    cm.add_argument("--store-logs", action="store_true")
+    cm.set_defaults(func=_cmd_measure_compartments)
+
+    g = msub.add_parser("progress", help="live progress of a measure run, from its DB",
+                        description="Blocks done against the total each stage recorded "
+                                    "before dispatch. Reads only; re-run to refresh.")
+    g.add_argument("db")
+    g.set_defaults(func=_cmd_measure_progress)
+
     # --- run-report ---------------------------------------------------------
     q = sub.add_parser("run-report", help="self-contained HTML summary of a run",
                        description="Write a human-readable HTML summary of a run from "
@@ -325,6 +427,287 @@ def _cmd_progress(args) -> int:
 
     argv = [args.work_dir] + (["--sample", str(args.sample)] if args.sample else [])
     return run_progress.main(argv) or 0
+
+
+_MEASURE_DESC = """\
+Per-body morphometry over PUBLISHED output.
+
+Separate from `run` on purpose: `run` reads a source and writes a volume, while these
+read a finished volume and write tables. The thing being measured is often not the
+thing this pipeline produced.
+
+    neu-morpho measure volumes  --src ... --db ...   # per-body voxel count + volume
+    neu-morpho measure progress <db>                 # how far along that is
+"""
+
+_MEASURE_VOLUMES_DESC = """\
+Count each body's voxels and accumulate per-body volume into a metrics DB.
+
+Reads EVERY block by default. An ROI built from a compartment mask omits somata that
+sit outside it, and dividing a truncated volume by a complete cable length is wrong in
+a way nothing downstream can see; an empty block is cheap enough that reading all of
+them is the affordable choice as well as the safe one. Pass --roi only when the region
+really is the subject.
+
+--keep restricts which bodies are RECORDED, never which blocks are read, so the rows it
+writes are complete. Without it a fragmented segmentation records every single-voxel
+speck, and each one costs a driver-side upsert.
+
+--with-bbox switches to the older index scan, which also records bounding boxes. That
+costs an argwhere plus an argsort over every labelled voxel — ~30 s against ~3 s per
+dense block — so it is opt-in. The two paths both accumulate into voxel_count and
+refuse to share a DB, since running both would double every count.
+"""
+
+
+def _cmd_measure_volumes(args) -> int:
+    from blockrun import iter_blocks
+    from neu_vol import read_scales, scale_spec
+    from neu_vol.logs import quiet_store_logs
+    from neu_morpho.measure.driver import resolve_keep
+
+    with quiet_store_logs(not args.store_logs):
+        scales = read_scales(args.src)
+        if not 0 <= args.level < len(scales):
+            raise SystemExit(f"--level {args.level} out of range "
+                             f"(source has {len(scales)} levels)")
+        s = scales[args.level]
+        log.info("source L%d %s @ %s nm  origin %s", s.index, s.shape, s.voxel_size,
+                 s.origin_nm)
+        keep = resolve_keep(args.keep)
+        if keep is not None:
+            log.info("keep: %d bodies from %d source(s)", len(keep), len(args.keep))
+        n_blocks = sum(1 for _ in iter_blocks(s.shape, (args.block,) * 3))
+        log.info("%d blocks of %d^3%s -> %s", n_blocks, args.block,
+                 " (+bbox)" if args.with_bbox else "", args.db)
+        if args.dry_run:
+            log.info("--dry-run: nothing executed")
+            return 0
+
+        t = time.time()
+        common = dict(keep=keep, roi=args.roi, resume=not args.no_resume)
+        if args.serial:
+            out = _measure_dispatch(args, scale_spec(args.src, args.level), s,
+                                    client=None, **common)
+        else:
+            from blockrun import start_dask
+            cfg = args.config or ["dask-local"]
+            with start_dask(args.workers, cfg, label="measure-volumes",
+                            logger=log) as client:
+                out = _measure_dispatch(args, scale_spec(args.src, args.level), s,
+                                        client=client, **common)
+        out["minutes"] = round((time.time() - t) / 60, 2)
+        log.info("measure volumes: %s", out)
+    return 0
+
+
+def _measure_dispatch(args, spec, s, *, client, keep, roi, resume):
+    """--with-bbox reuses the index scan; the default is the counts-only sweep."""
+    if args.with_bbox:
+        return index_segments(spec, args.db, scan_voxel_size=s.voxel_size,
+                              scan_scale=s.index, block_shape=(args.block,) * 3,
+                              roi=roi, keep=keep, client=client, resume=resume)
+    from neu_morpho.measure.driver import sweep_volumes
+    return sweep_volumes(spec, args.db, voxel_size=s.voxel_size, block=args.block,
+                         keep=keep, roi=roi, background=args.background,
+                         client=client, resume=resume)
+
+
+_MEASURE_SKEL_DESC = """\
+Cable length, topology and (where the source has radii) diameter statistics, per body.
+
+The per-BODY pass, where `volumes` is per-block, and the differences are deliberate.
+Bodies are batched into tasks because each read is one small object and per-task
+dispatch would otherwise dominate; within a batch, reads run on threads, and they all
+share one opened store. A body that fails is RECORDED and skipped rather than killing
+the run — the opposite of the block sweep's fail-fast, because one unreadable skeleton
+says nothing about the others, whereas one skipped block truncates every body in it.
+
+A body with no published skeleton is recorded `absent` and never retried. A body that
+raised is recorded `failed` and IS retried next run. Those are different states and
+collapsing them would make a transient error permanent.
+"""
+
+
+def _cmd_measure_skeletons(args) -> int:
+    from neu_vol.logs import quiet_store_logs
+    from neu_morpho.measure.driver import resolve_keep
+    from neu_morpho.measure.skeletons import sweep_skeletons
+
+    with quiet_store_logs(not args.store_logs):
+        bodies = resolve_keep(args.bodies)
+        if not bodies:
+            raise SystemExit("--bodies resolved to no ids")
+        log.info("%d bodies; skeletons under %s/%s", len(bodies), args.volume,
+                 args.skeleton_dir)
+        if args.dry_run:
+            log.info("--dry-run: nothing executed")
+            return 0
+
+        t = time.time()
+        common = dict(bodies=sorted(bodies), skeleton_dir=args.skeleton_dir,
+                      require_radii=args.require_radii, batch=args.batch,
+                      threads=args.threads, resume=not args.no_resume,
+                      retry_failed=not args.no_retry_failed)
+        if args.serial:
+            out = sweep_skeletons(args.volume, args.db, client=None, **common)
+        else:
+            from blockrun import start_dask
+            with start_dask(args.workers, args.config or ["dask-local"],
+                            label="measure-skeletons", logger=log) as client:
+                out = sweep_skeletons(args.volume, args.db, client=client, **common)
+        out["minutes"] = round((time.time() - t) / 60, 2)
+        log.info("measure skeletons: %s", out)
+    return 0
+
+
+_MEASURE_COMPARTMENTS_DESC = """\
+Split each body's volume by semantic compartment (nucleus, soma, neuropil, ...).
+
+Reads the segmentation block and the semantic block over the SAME voxel indices and counts
+(body, label) pairs in one pass. Requires the two volumes to share a grid at the chosen
+level -- same voxel size, same origin -- which is checked, not assumed.
+
+Label 0 is counted too, so `sum over labels == the body's total voxel count` is an exact
+identity. --verify checks that against the totals a previous `measure volumes` run
+recorded. That is what makes --occupancy-scale safe to use: a coarse grid CAN drop a block
+that holds data, and normally you would never learn which, but the volume sweep read every
+block, so its totals are ground truth and any deficit is named rather than silent.
+
+Note the distinction from an anatomical ROI, which is NOT safe here: a compartment mask
+omits somata lying outside it, whereas a soma is segmentation and so is non-zero at any
+coarse level of the segmentation itself.
+
+non_somatic = total - (nucleus + soma), so nothing needs measuring twice.
+"""
+
+
+def _cmd_measure_compartments(args) -> int:
+    import numpy as np
+
+    from neu_vol import read_scales, scale_spec
+    from neu_vol.backends.base import open_backend
+    from neu_vol.logs import quiet_store_logs
+    from neu_morpho.measure.compartments import (semantic_label_names, somatic_labels,
+                                                 sweep_compartments, verify_compartments)
+    from neu_morpho.measure.driver import resolve_keep
+
+    with quiet_store_logs(not args.store_logs):
+        seg_scales = read_scales(args.src)
+        if not 0 <= args.level < len(seg_scales):
+            raise SystemExit(f"--level {args.level} out of range")
+        s = seg_scales[args.level]
+
+        sem_scales = read_scales(args.semantic)
+        if args.semantic_level is not None:
+            sem = sem_scales[args.semantic_level]
+        else:
+            match = [x for x in sem_scales
+                     if np.allclose(x.voxel_size, s.voxel_size)]
+            if not match:
+                raise SystemExit(
+                    f"the semantic volume has no level at {s.voxel_size} nm "
+                    f"(it has {[x.voxel_size[0] for x in sem_scales]}); pass "
+                    f"--semantic-level explicitly if you know what you are doing")
+            sem = match[0]
+        # Same voxel size is necessary but not sufficient — a shared ORIGIN is what makes
+        # a voxel index mean the same thing in both.
+        if not np.allclose(s.origin_nm, sem.origin_nm):
+            raise SystemExit(f"grids do not share an origin: segmentation "
+                             f"{s.origin_nm} vs semantic {sem.origin_nm}")
+        log.info("seg  L%d %s @ %s", s.index, s.shape, s.voxel_size)
+        log.info("sem  L%d %s @ %s", sem.index, sem.shape, sem.voxel_size)
+        names = semantic_label_names(args.semantic)
+        log.info("semantic labels: %s", names)
+        log.info("somatic = %s -> labels %s", list(("nucleus", "soma")),
+                 somatic_labels(args.semantic))
+
+        keep = resolve_keep(args.keep)
+        blocks = None
+        if args.occupancy_scale is not None:
+            from neu_morpho.occupancy import occupied_blocks
+            occ = seg_scales[args.occupancy_scale]
+            arr = open_backend(scale_spec(args.src, occ.index)).read_region(
+                tuple(slice(0, int(d)) for d in occ.shape))
+            grid_shape = [int(math.ceil(d / args.block)) for d in s.shape]
+            blocks = occupied_blocks(arr, occ_voxel_size=occ.voxel_size,
+                                     mesh_voxel_size=s.voxel_size,
+                                     block_shape=(args.block,) * 3,
+                                     grid_shape=grid_shape,
+                                     dilate=args.occupancy_dilate)
+            log.info("occupancy L%d dilate %d: %d of %d blocks",
+                     occ.index, args.occupancy_dilate, len(blocks),
+                     int(np.prod(grid_shape)))
+        if args.dry_run:
+            log.info("--dry-run: nothing executed")
+            return 0
+
+        t = time.time()
+        common = dict(sem_shape=sem.shape, block=args.block, keep=keep, blocks=blocks,
+                      roi=args.roi, background=args.background,
+                      resume=not args.no_resume)
+        specs = (scale_spec(args.src, s.index), scale_spec(args.semantic, sem.index))
+        if args.serial:
+            out = sweep_compartments(*specs, args.db, client=None, **common)
+        else:
+            from blockrun import start_dask
+            with start_dask(args.workers, args.config or ["dask-local"],
+                            label="measure-compartments", logger=log) as client:
+                out = sweep_compartments(*specs, args.db, client=client, **common)
+        out["minutes"] = round((time.time() - t) / 60, 2)
+        log.info("measure compartments: %s", out)
+
+        if args.verify:
+            v = verify_compartments(args.db)
+            log.info("verify: %d bodies, %d mismatched, %d voxels missing (%.4f%%)",
+                     v["n_bodies"], v["n_mismatched"], v["voxels_missing"],
+                     100 * v["fraction_missing"])
+            if v["n_mismatched"]:
+                log.warning("worst (body, total, summed): %s", v["worst"])
+    return 0
+
+
+def _cmd_measure_progress(args) -> int:
+    if not os.path.exists(args.db):
+        raise SystemExit(f"no such metrics DB: {args.db}")
+    # READ-ONLY, and that is not a nicety: a default open runs DDL, which takes a write
+    # lock and can kill a sweep that is mid-transaction on the same file.
+    db = MetricsDB(args.db, read_only=True)
+    try:
+        meta, counts = db.read_stage_meta(), db.stage_counts()
+        bodies = db.con.execute(
+            "SELECT COUNT(*) FROM bodies WHERE voxel_count>0").fetchone()[0]
+        # Derived from the registry, never a hardcoded list — that is how the compartment
+        # stage came to record its progress and display none of it.
+        rows = [st for st in MetricsDB.BLOCK_STAGES if counts.get(st) or st in meta]
+        if not rows:
+            print(f"{args.db}: no measure stage has run")
+            return 0
+        for st in rows:
+            done, m = counts.get(st, 0), meta.get(st, {})
+            total = m.get("total")
+            if total:
+                frac = done / total
+                bar = "#" * int(24 * frac) + "." * (24 - int(24 * frac))
+                print(f"{st:6s} [{bar}] {done:>7d}/{total:<7d} {100*frac:5.1f}%")
+            else:
+                # A stage that ran before the total was recorded, or a killed driver.
+                print(f"{st:6s} {done:>7d} blocks done, total unrecorded")
+            if m:
+                print(f"       block {m.get('block_shape')}  voxel {m.get('voxel_size')}"
+                      f"  keep {m.get('n_keep')}  started {m.get('started')}")
+        print(f"bodies with a voxel count: {bodies}")
+        skel = db.skel_counts()
+        if skel:
+            total = (meta.get("skel") or {}).get("total")
+            seen = sum(skel.values())
+            head = f"skel   {seen}/{total}" if total else f"skel   {seen} bodies"
+            # Statuses are shown separately because they are not interchangeable:
+            # `absent` is terminal, `failed` is retried on the next run.
+            print(f"{head}  " + "  ".join(f"{k} {v}" for k, v in sorted(skel.items())))
+    finally:
+        db.close()
+    return 0
 
 
 def _cmd_run_report(args) -> int:
@@ -512,11 +895,16 @@ def _main(args) -> int:
                 raise SystemExit("--no-metrics-db is incompatible with the index "
                                  "stage, whose only output is that DB")
             t = time.time()
+            # An explicit --allowlist restricts which bodies get RECORDED. Every block is
+            # still read in full, so the rows are complete; what it removes is the
+            # driver-side upsert per speck, which on a fragmented segmentation
+            # outnumbers the verified neurons by orders of magnitude.
+            index_keep = load_allowlist(args.allowlist) if args.allowlist else None
             summaries["index"] = index_segments(
                 scale_spec(args.src, idx_s.index), db_path,
                 scan_voxel_size=idx_s.voxel_size, scan_scale=idx_s.index,
                 fullres_factor=idx_s.factor_from(finest),
-                block_shape=block, roi=roi_index,
+                block_shape=block, roi=roi_index, keep=index_keep,
                 client=client, resume=resume)
             timing["index"] = (time.time() - t) / 60
             log.info("index: %s  (%.1f min)", summaries["index"], timing["index"])
