@@ -1,12 +1,14 @@
 """Write neuroglancer precomputed meshes and skeletons (stage-2 output).
 
 Meshes — thin wrappers over ``vol2mesh.multires``:
+
   - :func:`write_mesh_info` -> ``multires.write_info`` (the mesh ``info``, once).
   - :func:`write_body_multires` -> per-LOD octree fragments
     (``multires.split_mesh_for_lod``) + ``multires.write_object_mesh``.
 
 Skeletons — the ``neuroglancer_skeletons`` format written directly (via osteoid's
 ``Skeleton.to_precomputed``, which kimimaro already depends on, so no CloudVolume):
+
   - :func:`write_skeleton_info` -> the skeleton ``info``, once.
   - :func:`write_body_skeleton` -> one binary blob per body.
 
