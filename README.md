@@ -47,6 +47,7 @@ Installing the package provides the **`neu-morpho`** command (equivalently
 neu-morpho run ...                  # the pipeline
 neu-morpho progress <work-dir>      # live per-stage counts
 neu-morpho run-report <work-dir>    # self-contained HTML summary
+neu-morpho help [COMMAND]           # what --help prints, as a subcommand
 ```
 
 `run` drives the stages against a dask cluster — local or SLURM, chosen by

@@ -353,10 +353,44 @@ def build_parser() -> argparse.ArgumentParser:
                    help="output HTML (default: <work-dir>/report.html)")
     q.set_defaults(func=_cmd_run_report)
 
+    _add_help_command(sub)
+
     # `run`'s own subparser, so the validation below can report errors against it
     # rather than against the top-level usage, which is what a user sees today.
     top._run_parser = p
     return top
+
+
+def _add_help_command(sub) -> None:
+    """``neu-morpho help [COMMAND ...]`` — the same text ``--help`` prints.
+
+    Because `help run` and `run --help` are the same thing to everyone except argparse:
+    one of the two is what a person types first, and being told "invalid choice" for it is
+    a poor greeting from a tool whose whole surface is subcommands.
+
+    It **re-parses** rather than reaching into the parser, so what it prints cannot drift
+    from ``--help``: it literally is ``--help``. That is also what makes the nested case
+    work — ``neu-morpho help measure run`` reaches `measure`'s own subcommand — and an
+    unknown name gets argparse's own error listing the real choices.
+    """
+    q = sub.add_parser(
+        "help", help="what `--help` prints, as a subcommand",
+        description="Print the help for the tool, or for one of its subcommands.\n\n"
+                    "`neu-morpho help run` and `neu-morpho run --help` are the same "
+                    "thing; nested subcommands work too (`help measure run`).",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    q.add_argument("command", nargs="*", metavar="COMMAND",
+                   help="the subcommand to describe (default: the whole tool)")
+    q.set_defaults(func=cmd_help)
+
+
+def cmd_help(args) -> int:
+    """Hand the arguments back to the parser as ``--help``, and report its exit code."""
+    try:
+        build_parser().parse_args([*args.command, "--help"])
+    except SystemExit as e:                      # what --help always does
+        return int(e.code or 0)
+    return 0
 
 
 def _parse_args(argv=None):

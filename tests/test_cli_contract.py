@@ -30,9 +30,41 @@ def test_every_subcommand_is_reachable_from_the_parser():
     parser = cli.build_parser()
     subs = next(a for a in parser._actions
                 if isinstance(a, argparse._SubParsersAction)).choices
-    assert set(subs) == {"run", "progress", "measure", "run-report"}
+    assert set(subs) == {"run", "progress", "measure", "run-report", "help"}
     for name, sub in subs.items():
         assert sub.format_usage().strip(), f"{name} renders no usage line"
+
+
+def test_help_is_a_subcommand_as_well_as_a_flag(capsys):
+    """`neu-morpho help run` and `neu-morpho run --help` are the same thing to everyone
+    except argparse."""
+    import pytest
+
+    from neu_morpho import cli
+
+    assert cli.main(["help"]) == 0
+    assert "usage: neu-morpho" in capsys.readouterr().out
+
+    assert cli.main(["help", "run"]) == 0
+    printed = capsys.readouterr().out
+    assert "usage: neu-morpho run" in printed
+
+    # the same text, because re-parsing means there is no second rendering to drift
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["run", "--help"])
+    assert capsys.readouterr().out == printed
+
+
+def test_help_reaches_a_NESTED_subcommand(capsys):
+    """`measure` has its own group, and `help measure volumes` is the reason the argument
+    is variadic rather than a single name."""
+    from neu_morpho import cli
+
+    assert cli.main(["help", "measure", "volumes"]) == 0
+    assert "usage: neu-morpho measure volumes" in capsys.readouterr().out
+
+    assert cli.main(["help", "measure", "nosuch"]) == 2
+    assert "invalid choice: 'nosuch'" in capsys.readouterr().err
 
 
 def test_every_measure_subcommand_is_reachable():
