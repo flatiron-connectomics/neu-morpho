@@ -519,3 +519,138 @@ def test_the_skeleton_transform_matches_the_mesh_one_on_our_own_output(tmp_path)
     from neu_morpho import precomputed
     precomputed.write_skeleton_info(vol + "/skeleton")
     np.testing.assert_array_equal(mesh_transform(vol), skeleton_transform(vol))
+
+
+# --------------------------------------------------------------------------- #
+# the legacy single-resolution mesh format
+# --------------------------------------------------------------------------- #
+def _write_legacy_mesh(tmp_path, bodies, *, transform=None, mesh_dir="mesh"):
+    """A `neuroglancer_legacy_mesh` directory: a JSON manifest per body, plus fragments.
+
+    Written by hand rather than by `precomputed.py`, because this package does not WRITE the
+    legacy format and never will — it exists to read what other people published.
+    """
+    import json
+    import struct
+
+    root = tmp_path / "segmentation"
+    (root / mesh_dir).mkdir(parents=True, exist_ok=True)
+    (root / "info").write_text(json.dumps({"@type": "neuroglancer_multiscale_volume",
+                                           "mesh": mesh_dir, "scales": []}))
+    info = {"@type": "neuroglancer_legacy_mesh"}
+    if transform is not None:
+        info["transform"] = list(transform)
+    (root / mesh_dir / "info").write_text(json.dumps(info))
+
+    for body, fragments in bodies.items():
+        names = []
+        for i, (vertices, faces) in enumerate(fragments):
+            name = f"{body}_{i}.ngmesh"
+            v = np.asarray(vertices, np.float32)
+            f = np.asarray(faces, np.uint32)
+            (root / mesh_dir / name).write_bytes(
+                struct.pack("<I", len(v)) + v.tobytes() + f.tobytes())
+            names.append(name)
+        (root / mesh_dir / f"{body}:0").write_text(json.dumps({"fragments": names}))
+    return str(root)
+
+
+def _tetra(offset=0.0):
+    vertices = np.array([[0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10]], np.float32) + offset
+    faces = np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]], np.uint32)
+    return vertices, faces
+
+
+def test_a_legacy_mesh_reads_back_as_the_geometry_it_stores(tmp_path):
+    """The format published ROI and neuropil sources are commonly written in.
+
+    Refusing it meant every body of such a volume came back absent, which is indistinguishable
+    from a volume holding no meshes at all — the exact failure `_check_supported` exists to
+    prevent, reached from the other side.
+    """
+    vertices, faces = _tetra()
+    vol = _write_legacy_mesh(tmp_path, {5: [(vertices, faces)]})
+    got = read_body_mesh(vol, 5)
+    assert got is not None
+    read_vertices, read_faces, lod = got
+    assert read_vertices == pytest.approx(vertices)
+    assert np.array_equal(read_faces, faces)
+    assert lod == 0                              # single resolution: there is only one
+
+
+def test_several_legacy_fragments_concatenate_with_faces_REBASED(tmp_path):
+    """A body may be split across fragments, and each one's indices start at zero.
+
+    Concatenating vertices without offsetting the second fragment's faces builds triangles
+    from the first fragment's vertices — a mesh that renders, of the wrong shape.
+    """
+    a, b = _tetra(), _tetra(offset=100.0)
+    vol = _write_legacy_mesh(tmp_path, {5: [a, b]})
+    read_vertices, read_faces, _ = read_body_mesh(vol, 5)
+    assert len(read_vertices) == 8
+    assert read_faces.max() == 7                             # reaches the second fragment
+    assert np.array_equal(read_faces[len(a[1]):], b[1] + 4)  # ...and is offset by exactly 4
+
+
+def test_a_legacy_mesh_applies_the_sources_own_transform(tmp_path):
+    """One model space, in nanometres, whatever the publisher stored — invariant NM-SPACE.
+
+    The multires path has always done this; a legacy path that skipped it would return
+    vertices in the stored model's units for some sources and nm for others, with the same
+    function signature and nothing to say which.
+    """
+    vertices, faces = _tetra()
+    vol = _write_legacy_mesh(tmp_path, {5: [(vertices, faces)]},
+                             transform=[2, 0, 0, 5, 0, 2, 0, 6, 0, 0, 2, 7])
+    read_vertices, _, _ = read_body_mesh(vol, 5)
+    assert read_vertices == pytest.approx(vertices * 2.0 + np.array([5.0, 6.0, 7.0]))
+
+
+def test_a_legacy_mesh_body_that_is_absent_is_None_not_an_error(tmp_path):
+    """`skip_missing` in a batch depends on absence being distinguishable from breakage."""
+    vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
+    assert read_body_mesh(vol, 404) is None
+
+
+def test_asking_a_legacy_mesh_for_a_LOD_IT_CANNOT_HAVE_raises(tmp_path):
+    """Handing back the single mesh for `lod=3` would misreport the detail level to a caller
+    that asked for it deliberately — the same reason the multires path refuses an absent LOD."""
+    vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
+    assert read_body_mesh(vol, 5, lod=0) is not None
+    with pytest.raises(ValueError, match="single resolution"):
+        read_body_mesh(vol, 5, lod=3)
+
+
+def test_a_truncated_legacy_fragment_is_refused_not_silently_shortened(tmp_path):
+    """The vertex count is in the header, so a short file is detectable corruption — and a
+    mesh missing its last few thousand vertices looks like a real but subtly wrong object."""
+    import struct
+
+    vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
+    fragment = next(p for p in (tmp_path / "segmentation" / "mesh").iterdir()
+                    if p.name.endswith(".ngmesh"))
+    fragment.write_bytes(struct.pack("<I", 4) + b"\x00" * 8)     # claims 4, carries most of 1
+    with pytest.raises(ValueError, match="truncated"):
+        read_body_mesh(vol, 5)
+
+
+def test_a_manifest_naming_a_fragment_that_is_not_there_says_so(tmp_path):
+    """A store and its manifest disagreeing is a broken publish, not an empty body."""
+    vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
+    next(p for p in (tmp_path / "segmentation" / "mesh").iterdir()
+         if p.name.endswith(".ngmesh")).unlink()
+    with pytest.raises(ValueError, match="manifest and the store disagree"):
+        read_body_mesh(vol, 5)
+
+
+def test_an_UNKNOWN_mesh_type_is_still_refused(tmp_path):
+    """Widening the accepted set must not turn the guard off."""
+    import json
+
+    from neu_morpho.readback import UnsupportedSubresource
+
+    vol = _write_legacy_mesh(tmp_path, {5: [_tetra()]})
+    (tmp_path / "segmentation" / "mesh" / "info").write_text(
+        json.dumps({"@type": "neuroglancer_something_else"}))
+    with pytest.raises(UnsupportedSubresource, match="neuroglancer_multilod_draco"):
+        read_body_mesh(vol, 5)

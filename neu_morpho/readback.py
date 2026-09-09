@@ -186,11 +186,19 @@ def _subresource_info(volume: str, subdir: str):
     return raw, (json.loads(raw) if raw else {})
 
 
-#: The ``@type`` each reader here understands. Anything else is a real precomputed format
-#: that this module cannot decode — `neuroglancer_legacy_mesh` being the one that exists in
-#: the wild, whose per-body manifest is JSON at `<body>:0` naming separate fragment files.
-_SUPPORTED_TYPES = {"mesh": "neuroglancer_multilod_draco",
-                    "skeleton": "neuroglancer_skeletons"}
+#: The ``@type``\ s each reader here understands. Anything else is a real precomputed format
+#: this module cannot decode.
+#:
+#: ``neuroglancer_legacy_mesh`` is the single-resolution format that predates the
+#: multi-resolution one and is what published ROI and neuropil sources are commonly written
+#: in — a JSON manifest at ``<body>:0`` naming separate fragment files, each a bare
+#: ``uint32 count``, ``float32 xyz * count``, ``uint32`` triangle indices. It carries no LODs
+#: and no Draco, so it needs none of the multires machinery below.
+_SUPPORTED_TYPES = {"mesh": ("neuroglancer_multilod_draco", "neuroglancer_legacy_mesh"),
+                    "skeleton": ("neuroglancer_skeletons",)}
+
+#: The single-resolution mesh format, handled by :func:`_read_legacy_mesh`.
+LEGACY_MESH = "neuroglancer_legacy_mesh"
 
 
 def _check_supported(info, volume: str, subdir: str, kind: str) -> None:
@@ -208,16 +216,59 @@ def _check_supported(info, volume: str, subdir: str, kind: str) -> None:
     """
     declared = (info or {}).get("@type")
     expected = _SUPPORTED_TYPES[kind]
-    if declared is None or declared == expected:
+    if declared is None or declared in expected:
         return
-    extra = ""
-    if declared == "neuroglancer_legacy_mesh":
-        extra = (" That is the legacy single-resolution mesh format, which stores a JSON "
-                 "manifest at '<body>:0' rather than a multi-resolution manifest.")
+    understood = " or ".join(repr(e) for e in expected)
     raise UnsupportedSubresource(
         f"{volume}/{subdir}/info declares '@type' {declared!r}, but this reader "
-        f"understands only {expected!r}.{extra} Refusing rather than reporting every "
+        f"understands only {understood}. Refusing rather than reporting every "
         f"body absent, which is what reading it with the wrong format would look like.")
+
+
+def _read_legacy_mesh(volume: str, body_id: int, mesh_dir: str):
+    """``(vertices_xyz, faces)`` for a ``neuroglancer_legacy_mesh`` body, or ``None``.
+
+    The single-resolution format: ``<body>:0`` is a JSON manifest naming fragment files, and
+    each fragment is a bare little-endian ``uint32`` vertex count, then that many ``float32``
+    xyz triples, then ``uint32`` triangle indices filling the rest. No LODs, no Draco, no
+    octree — so none of the multires machinery applies, and the whole reader is this function.
+
+    The manifest names fragments **relative to the mesh directory**, and a body may have
+    several; their faces are rebased as they are concatenated, exactly as the multires path
+    does across octree cells.
+
+    A truncated fragment is refused rather than silently yielding a partial mesh: the vertex
+    count is in the header, so a file too short to hold it is a detectable corruption, and a
+    mesh missing its last few thousand vertices looks like a real but subtly wrong neuron.
+    """
+    import json
+
+    manifest = location.read_bytes(volume, mesh_dir, f"{int(body_id)}:0")
+    if manifest is None:
+        return None
+    fragments = (json.loads(manifest) or {}).get("fragments") or []
+
+    verts, faces, offset = [], [], 0
+    for name in fragments:
+        blob = location.read_bytes(volume, mesh_dir, str(name))
+        if blob is None:
+            raise ValueError(
+                f"body {body_id}: manifest names fragment {name!r}, which is not in "
+                f"{volume}/{mesh_dir}. The manifest and the store disagree")
+        count = int(np.frombuffer(blob, "<u4", 1)[0])
+        needed = 4 + 12 * count
+        if len(blob) < needed:
+            raise ValueError(
+                f"body {body_id}: fragment {name!r} declares {count} vertices, which needs "
+                f"{needed} bytes, but it is {len(blob)} — truncated")
+        v = np.frombuffer(blob, "<f4", count * 3, 4).reshape(-1, 3).astype(float)
+        indices = np.frombuffer(blob, "<u4", (len(blob) - needed) // 4, needed)
+        verts.append(v)
+        faces.append(indices.reshape(-1, 3).astype(np.int64) + offset)
+        offset += count
+    if not verts:
+        return None
+    return np.concatenate(verts), np.concatenate(faces)
 
 
 def _transform_matrix(info):
@@ -373,10 +424,28 @@ def read_body_mesh(volume: str, body_id: int, lod: int | None = None,
     the same volume, with nothing to say so. :func:`mesh_transform` reports the matrix for
     anyone who needs the stored-model coordinates back.
     """
-    from vol2mesh import multires
-
     raw_info, info = _subresource_info(volume, mesh_dir)
     _check_supported(info, volume, mesh_dir, "mesh")
+
+    if info.get("@type") == LEGACY_MESH:
+        # Single-resolution: no LODs, so the only honest answer to a `lod` request is 0.
+        # Silently handing back the one mesh for `lod=3` would misreport the detail level to
+        # a caller that asked for it deliberately.
+        if lod not in (None, 0):
+            raise ValueError(
+                f"body {body_id}: {volume}/{mesh_dir} is {LEGACY_MESH}, which has a single "
+                f"resolution — LOD {lod} does not exist; pass lod=0 or None")
+        legacy = _read_legacy_mesh(volume, body_id, mesh_dir)
+        if legacy is None:
+            return None
+        vertices, all_faces = legacy
+        matrix = _transform_matrix(info)
+        if matrix is not None:
+            vertices = vertices @ matrix[:, :3].T + matrix[:, 3]
+        return vertices, all_faces, 0
+
+    from vol2mesh import multires
+
     sharding = info.get("sharding")
 
     if sharding is not None:
