@@ -26,7 +26,11 @@ dependencies = [
     "scipy",
     "tensorstore>=0.1.70",
     "kimimaro",        # TEASAR skeletonization (voxel mask)
-    "osteoid",         # Skeleton class, split out of kimimaro
+    # Skeleton class, split out of kimimaro. >=0.7.3 for the dtype: earlier
+    # `consolidate` promoted edges to int64, and kimimaro's compiled remove_ticks
+    # declares a uint32_t buffer, so stock postprocess raised at any non-zero tick
+    # threshold. See tests/test_skeletonize_e2e.py.
+    "osteoid>=0.7.3",
     "DracoPy",         # Draco codec binding used by vol2mesh.multires
     "trimesh",         # vol2mesh.multires LOD slicing (trim_mesh_to_box)
     "neu-lib",         # ScaleInfo. numpy-only.

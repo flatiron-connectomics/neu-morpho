@@ -265,17 +265,25 @@ def test_default_tick_threshold_runs():
     assert fused.edges.dtype == np.uint32 and fused.vertices.dtype == np.float32
 
 
-def test_remove_loops_breaks_the_edge_dtype():
-    """Why fuse_body inlines postprocess's steps instead of calling it.
+def test_the_fusion_chain_preserves_the_dtype_contract():
+    """Every step of dust -> loops -> join -> ticks keeps uint32 edges, float32 vertices.
 
-    postprocess is dust -> loops -> join -> ticks, and ``remove_loops`` rebuilds
-    edges as **int64**. ``remove_ticks`` reaches compiled code declaring a
-    ``uint32_t`` buffer, so it raises — not always (it depends on the arbor), but
-    often enough that the shipped tick default is unusable. Inlining lets
-    normalize_dtypes run between those two steps.
+    This replaces a tripwire that asserted the opposite. Until **osteoid 0.7.3**,
+    ``Skeleton.consolidate`` promoted edges to int64, and ``remove_loops`` ends in a
+    consolidate — so ``remove_ticks``, which reaches compiled code declaring
+    ``float`` / ``uint32_t`` buffers, raised ``Buffer dtype mismatch`` at any non-zero
+    tick threshold. ``kimimaro.skeletonize`` handed back int64 edges for the same
+    reason. Both are fixed upstream; the culprit was osteoid, not kimimaro, which is
+    pinned at 5.8.4 either side of the change.
 
-    If this starts failing, kimimaro has fixed the dtype upstream and the
-    inlining could be reconsidered.
+    ``normalize_dtypes`` stays, as a guard rather than a repair: it tests each dtype
+    before casting, so it is ~2 us on an already-correct skeleton, and what it protects
+    is the precomputed skeleton encoder downstream — invariant SPEC-VS-VIEWER, where a
+    non-float32 vertex attribute makes neuroglancer reject the entire layer.
+
+    The inlining in ``fuse_body`` is NOT affected by any of this and stays: it exists
+    for the seam join and the per-step accounting, neither of which
+    ``kimimaro.postprocess`` offers.
     """
     import kimimaro
     from kimimaro.post import remove_dust, remove_loops
@@ -285,45 +293,54 @@ def test_remove_loops_breaks_the_edge_dtype():
     cfg = replace(_cfg(), postprocess_dust_nm=0.0, postprocess_tick_nm=1000.0)
     frags = [skeletonize_block(_volume()[z0:z0 + 32], (z0, 0, 0), cfg)[7]
              for z0 in range(0, 96, 32)]
+    for frag in frags:
+        assert frag.edges.dtype == np.uint32, "skeletonize used to hand back int64"
+
     clean = normalize_dtypes(
         kimimaro.join_close_components(frags, radius=join_radius_nm(cfg)).consolidate())
     assert clean.edges.dtype == np.uint32 and clean.vertices.dtype == np.float32
 
-    # the step that breaks it, in isolation
-    assert remove_loops(remove_dust(clean.clone(), 0.0)).edges.dtype == np.int64
+    # the step that used to break it
+    looped = remove_loops(remove_dust(clean.clone(), 0.0))
+    assert looped.edges.dtype == np.uint32 and looped.vertices.dtype == np.float32
 
-    # ...and the resulting failure through the stock entry point
-    with pytest.raises(ValueError, match="Buffer dtype mismatch"):
-        kimimaro.postprocess(clean.clone(), dust_threshold=0.0, tick_threshold=1000.0)
+    # ...and the stock entry point, at a non-zero tick threshold
+    stock = kimimaro.postprocess(clean.clone(), dust_threshold=0.0, tick_threshold=1000.0)
+    assert stock.edges.dtype == np.uint32 and stock.vertices.dtype == np.float32
 
-    # our path handles the same input
     fused = fuse_body(frags, cfg, body_id=7)
-    assert fused is not None and fused.edges.dtype == np.uint32
+    assert fused is not None
+    assert fused.edges.dtype == np.uint32 and fused.vertices.dtype == np.float32
 
 
 def test_fuse_body_matches_kimimaro_postprocess():
     """fuse_body inlines postprocess's steps to measure them — pin the equivalence.
 
-    Only comparable with tick=0, the one configuration stock postprocess survives
-    (see above); that still covers dust, loop removal and the radius join.
+    Swept over the tick threshold, including the shipped non-zero default. That used
+    to be impossible: stock postprocess raised ``Buffer dtype mismatch`` at any
+    non-zero tick, so the equivalence could only be pinned at tick=0 and the tick path
+    was compared against nothing. osteoid 0.7.3 fixed the dtype, which is what lets
+    this cover the whole chain.
     """
     import kimimaro
 
     from neu_morpho.skeleton import (fuse_body, join_radius_nm, normalize_dtypes,
                                         skeletonize_block)
 
-    cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=0.0)
-    frags = _arbor_frags(cfg)
+    for tick_nm in (0.0, 1000.0):
+        cfg = replace(_cfg(), postprocess_dust_nm=200.0, postprocess_tick_nm=tick_nm)
+        frags = _arbor_frags(cfg)
 
-    ours = fuse_body(frags, cfg, body_id=7)
+        ours = fuse_body(frags, cfg, body_id=7)
 
-    joined = kimimaro.join_close_components(frags, radius=join_radius_nm(cfg))
-    theirs = kimimaro.postprocess(normalize_dtypes(joined.consolidate()),
-                                  dust_threshold=cfg.postprocess_dust_nm,
-                                  tick_threshold=cfg.postprocess_tick_nm)
+        joined = kimimaro.join_close_components(frags, radius=join_radius_nm(cfg))
+        theirs = kimimaro.postprocess(normalize_dtypes(joined.consolidate()),
+                                      dust_threshold=cfg.postprocess_dust_nm,
+                                      tick_threshold=cfg.postprocess_tick_nm)
 
-    assert len(ours.vertices) == len(theirs.vertices)
-    assert ours.cable_length() == pytest.approx(theirs.cable_length(), rel=1e-6)
+        assert len(ours.vertices) == len(theirs.vertices), f"tick={tick_nm}"
+        assert ours.cable_length() == pytest.approx(theirs.cable_length(), rel=1e-6), \
+            f"tick={tick_nm}"
 
 
 def test_tick_removal_prunes_twigs():
