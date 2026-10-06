@@ -24,6 +24,10 @@ from .compartments import (joint_counts, semantic_label_names,
                            verify_compartments)
 from .driver import resolve_keep, sweep_volumes
 from .skeletons import sweep_skeletons
+from .paths import (attach_points, bridge_gaps, compartment_graph, dvid_roi_region,
+                    near_points_region,
+                    path_distances, synapse_distance_table, synapse_distances,
+                    volume_roi_region)
 from .metrics import (cable_length_nm, diameter_stats, frustum_area_nm2,
                       frustum_volume_nm3, measure_skeleton, topology,
                       weighted_quantile)
@@ -43,6 +47,16 @@ __all__ = [
     "measure_skeleton",
     "topology",
     "weighted_quantile",
+    # path length from a reference region, for synapses on a skeleton
+    "attach_points",
+    "bridge_gaps",
+    "compartment_graph",
+    "dvid_roi_region",
+    "near_points_region",
+    "path_distances",
+    "synapse_distance_table",
+    "synapse_distances",
+    "volume_roi_region",
     # the block-mapped driver (the only part that opens a store)
     "resolve_keep",
     "sweep_volumes",
