@@ -91,11 +91,14 @@ def _bar(done: int, total: int | None, width: int = 24) -> str:
 def _store_bodies(path: str) -> int | None:
     """How many bodies stage 1 produced fragments for — stage 2's denominator.
 
-    One directory per body (``fragments.body_dir``), so a single top-level listing
-    answers it. Do NOT walk into them: that is a millions-of-inodes traversal.
+    One directory per body inside each bucket (``fragments.count_bodies``), so one
+    listing per bucket answers it. Do NOT walk into them: that is a millions-of-inodes
+    traversal.
     """
+    from neu_morpho.fragments import count_bodies
+
     try:
-        return len(os.listdir(path))
+        return count_bodies(path)
     except OSError:
         return None
 
@@ -103,19 +106,18 @@ def _store_bodies(path: str) -> int | None:
 def _fragment_stores(work: str) -> list[tuple[str, int, int]]:
     """(name, body-dir count, recursive bytes) for the stage-1 fragment stores.
 
-    Only the top level is listed — one entry per body, tens of thousands at most.
-    Walking every body's fragments would be a millions-of-inodes traversal, which
-    is exactly the thing you are checking the size of. On ceph a directory's
-    ``st_size`` is already its recursive size, so that comes for free.
+    Only the buckets are listed — one entry per body. Walking every body's fragments
+    would be a millions-of-inodes traversal, which is exactly the thing you are
+    checking the size of. On ceph a directory's ``st_size`` is already its recursive
+    size, so that comes for free.
     """
     rows = []
     for name in ("chunked", "skel_chunked"):
         path = os.path.join(work, name)
         if not os.path.isdir(path):
             continue
-        try:
-            bodies = len(os.listdir(path))
-        except OSError:
+        bodies = _store_bodies(path)
+        if bodies is None:
             bodies = -1
         rows.append((name, bodies, os.stat(path).st_size))
     return rows

@@ -78,11 +78,14 @@ def read_run(work: str) -> dict:
 def store_bodies(path: str) -> int | None:
     """Bodies stage 1 produced fragments for — stage 2's denominator.
 
-    One directory per body (``fragments.body_dir``), so one top-level listing
-    answers it. Do NOT walk into them: that is a millions-of-inodes traversal.
+    One directory per body inside each bucket (``fragments.count_bodies``), so one
+    listing per bucket answers it. Do NOT walk into them: that is a millions-of-inodes
+    traversal.
     """
+    from neu_morpho.fragments import count_bodies
+
     try:
-        return len(os.listdir(path))
+        return count_bodies(path)
     except OSError:
         return None
 

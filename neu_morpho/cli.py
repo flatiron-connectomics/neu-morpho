@@ -30,6 +30,9 @@ so re-running the same command resumes.
 
 ``python -m neu_morpho`` is equivalent to ``neu-morpho``. ``PYTHONUNBUFFERED=1`` is
 the console-script equivalent of ``python -u``; without it the log lags the run.
+Keep that log OFF a shared network filesystem such as CephFS: unbuffered, every line is
+its own write, and once another node reads the file (``tail -f``) each one becomes a
+synchronous round trip. A local disk or your home directory is fine.
 
 **--config takes a bundled template name or a path, and is repeatable**, deep-merged
 left to right — so a site config carries only the keys that differ. The templates ship
@@ -84,6 +87,9 @@ from neu_vol import read_scales, scale_spec
 from neu_vol import describe_scales as describe
 
 log = logging.getLogger("neu-morpho")
+
+#: Above this many indexed bodies, an unfiltered mesh/skel run logs a warning.
+UNFILTERED_WARN_BODIES = 100_000
 
 # One line per stage, and the ONLY place they are described. `--stages` help, the
 # published CLI reference and the docs cheat sheet are all built from this, because a
@@ -951,6 +957,18 @@ def _main(args) -> int:
             db.close()
             log.info("allowlist: %d bodies -> %s", n, allowlist_path)
         allow = allowlist_path if os.path.exists(allowlist_path) else None
+        if allow is None and db_path and os.path.exists(db_path) and (
+                "mesh" in stages or "skel" in stages):
+            db = MetricsDB(db_path)
+            n_all = db.con.execute("SELECT COUNT(*) FROM bodies").fetchone()[0]
+            db.close()
+            if n_all > UNFILTERED_WARN_BODIES:
+                log.warning(
+                    "no --min-voxels or --allowlist: meshing/skeletonizing ALL %d indexed "
+                    "bodies. An over-segmentation is mostly tiny segments, each costing a "
+                    "directory and a fragment file in --work-dir (a 667k-segment run left "
+                    "658k files); consider --min-voxels (in voxels at --index-scale).",
+                    n_all)
 
         if "mesh" in stages:
             t = time.time()

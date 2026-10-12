@@ -11,6 +11,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from neu_morpho import fragments as F
 from neu_morpho.config import OutputConfig, SkeletonConfig
 from neu_morpho.ops.skeletonize_segments import skeletonize_segments
 from neu_morpho.skeleton import fuse_body, skeletonize_block
@@ -64,8 +65,8 @@ def test_skeletonize_end_to_end(tmp_path):
     assert summary["status_counts"].get("written") == 2
 
     # the spanning body produced one fragment per block...
-    assert len(os.listdir(os.path.join(summary["chunked_dir"], "7"))) == 3
-    assert len(os.listdir(os.path.join(summary["chunked_dir"], "9"))) == 1
+    assert len(os.listdir(F.body_dir(summary["chunked_dir"], 7))) == 3
+    assert len(os.listdir(F.body_dir(summary["chunked_dir"], 9))) == 1
 
     # ...and fused into a single connected skeleton over the full z extent.
     rod = _load(out_dir, 7)
@@ -138,7 +139,7 @@ def test_allowlist_restricts_bodies(tmp_path):
 
     assert os.path.exists(os.path.join(summary["out_dir"], "7"))
     assert not os.path.exists(os.path.join(summary["out_dir"], "9"))
-    assert not os.path.exists(os.path.join(summary["chunked_dir"], "9"))
+    assert not os.path.exists(F.body_dir(summary["chunked_dir"], 9))
 
 
 def test_resume_skips_done_and_stage2_reuses_fragments(tmp_path):
@@ -444,7 +445,7 @@ def test_neutu_tracer_end_to_end_welds_a_spanning_body(tmp_path):
     out_dir = summary["out_dir"]
     assert summary["num_blocks"] == 3
     assert summary["status_counts"].get("written") == 2
-    assert len(os.listdir(os.path.join(summary["chunked_dir"], "7"))) == 3
+    assert len(os.listdir(F.body_dir(summary["chunked_dir"], 7))) == 3
 
     rod = _load(out_dir, 7)
     assert len(rod.components()) == 1, (

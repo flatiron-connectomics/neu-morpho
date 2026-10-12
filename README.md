@@ -98,7 +98,10 @@ squeue -u "$USER"
 ```
 
 `PYTHONUNBUFFERED=1` is the console-script equivalent of `python -u`; without it the
-log lags a long run in 8 KB blocks.
+log lags a long run in 8 KB blocks. Keep that log **off a shared network filesystem such
+as CephFS**: unbuffered, every line is its own write, and once another node reads the file
+(`tail -f`) each one becomes a synchronous round trip. A local disk or your home directory
+is fine.
 
 `--roi-scale` is **required** whenever `--roi` is given: the same six numbers name a
 box four times smaller per pyramid level, and the wrong one silently processes the

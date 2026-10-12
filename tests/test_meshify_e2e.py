@@ -9,6 +9,7 @@ import os
 
 import numpy as np
 
+from neu_morpho import fragments as F
 from neu_morpho.config import MeshConfig, OutputConfig
 from neu_morpho.ops.meshify import meshify
 
@@ -56,7 +57,7 @@ def test_meshify_end_to_end(tmp_path):
     assert (1, 1, 1) in _lod0_cells(mesh_dir, 200)
 
     # cross-block body: assembled from 2 block fragments, spanning 2 z-cells
-    assert len(os.listdir(os.path.join(summary["chunked_dir"], "300"))) == 2
+    assert len(os.listdir(F.body_dir(summary["chunked_dir"], 300))) == 2
     cells300 = _lod0_cells(mesh_dir, 300)
     assert {(0, 0, 0), (0, 0, 1)} <= cells300      # xyz: spans z = 0 and 1
 
